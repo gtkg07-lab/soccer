@@ -1,0 +1,550 @@
+'use strict';
+
+// ===== 定数 =====
+const STAGE = {
+  'league': 'リーグ戦',
+  'league-phase': 'リーグフェーズ',
+  'knockout-round-playoffs': 'プレーオフ',
+  'round-of-16': 'ラウンド16',
+  'quarterfinals': '準々決勝',
+  'semifinals': '準決勝',
+  '3rd-place-match': '3位決定戦',
+  'final': '決勝',
+  'relegation-playoffs': '昇降格プレーオフ',
+};
+const SHORT = { premier: 'プレミア', laliga: 'ラ・リーガ', ligue1: 'リーグ・アン', ucl: 'CL', unl: 'ネーションズL' };
+const FLOW = {
+  ucl: [
+    { label: 'リーグ<br>フェーズ', stages: ['league-phase'], desc: '36チームが1つの順位表で8試合ずつ戦う。1〜8位はラウンド16へ、9〜24位はプレーオフへ、25位以下は敗退。' },
+    { label: 'プレーオフ', stages: ['knockout-round-playoffs'], desc: '9〜24位がホーム&アウェイで対戦し、勝者8チームがラウンド16へ。' },
+    { label: 'ラウンド<br>16', stages: ['round-of-16'], desc: 'ここからホーム&アウェイの2試合合計で勝ち上がりを決める。' },
+    { label: '準々決勝', stages: ['quarterfinals'], desc: '2試合合計で勝ち上がり。' },
+    { label: '準決勝', stages: ['semifinals'], desc: '2試合合計で勝ち上がり。' },
+    { label: '決勝', stages: ['final'], desc: '中立地での1試合で優勝が決まる。' },
+  ],
+  unl: [
+    { label: 'リーグ<br>フェーズ', stages: ['league-phase'], desc: '強さ順にリーグA〜Dに分かれ、各グループで総当たり。成績で上のリーグへの昇格・下への降格が決まる。' },
+    { label: '準々決勝', stages: ['quarterfinals'], desc: 'リーグA各グループの1・2位がホーム&アウェイで対戦。' },
+    { label: 'ファイナルズ', stages: ['semifinals', '3rd-place-match', 'final'], desc: '勝ち上がった4チームで準決勝・3位決定戦・決勝を行う。' },
+    { label: '昇降格<br>PO', stages: ['relegation-playoffs'], desc: '上のリーグの下位と下のリーグの上位が入れ替えをかけて対戦。' },
+  ],
+};
+const STATS = [
+  ['possessionPct', '支配率', 'pct'],
+  ['totalShots', 'シュート'],
+  ['shotsOnTarget', '枠内シュート'],
+  ['blockedShots', 'ブロックされたシュート'],
+  ['wonCorners', 'コーナーキック'],
+  ['totalPasses', 'パス'],
+  ['accuratePasses', 'パス成功'],
+  ['passRate', 'パス成功率', 'rate', 'accuratePasses', 'totalPasses'],
+  ['totalCrosses', 'クロス'],
+  ['totalTackles', 'タックル'],
+  ['interceptions', 'インターセプト'],
+  ['totalClearance', 'クリア'],
+  ['saves', 'セーブ'],
+  ['foulsCommitted', 'ファウル'],
+  ['offsides', 'オフサイド'],
+  ['yellowCards', 'イエローカード'],
+  ['redCards', 'レッドカード'],
+];
+const POS_GROUP = { G: 'ゴールキーパー', D: 'ディフェンダー', M: 'ミッドフィルダー', F: 'フォワード' };
+const YT_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.6 12 4.6 12 4.6s-7 0-8.9.5A3 3 0 0 0 1 7.2 31 31 0 0 0 .5 12a31 31 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 8.9.5 8.9.5s7 0 8.9-.5a3 3 0 0 0 2.1-2.1 31 31 0 0 0 .5-4.8 31 31 0 0 0-.5-4.8zM9.7 15.1V8.9L15.5 12z"/></svg>';
+
+// ===== データ読み込み =====
+const cache = {};
+function load(path) {
+  if (!cache[path]) {
+    cache[path] = fetch('data/' + path, { cache: 'no-cache' })
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  return cache[path];
+}
+let INDEX = null, TEAMS = {};
+const team = id => TEAMS[id] || { n: '未定', s: '未定', logo: '' };
+const comp = id => INDEX.comps.find(c => c.id === id);
+function currentSeason(c) {
+  const ss = c.seasons;
+  for (let i = ss.length - 1; i >= 0; i--) if (ss[i].done > 0) return ss[i];
+  return ss[0];
+}
+
+// ===== 表示の部品 =====
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const logo = (id, cls = '') => {
+  const t = team(id);
+  return t.logo ? `<img class="logo ${cls}" src="${esc(t.logo)}" alt="" loading="lazy">` : `<span class="logo ${cls}"></span>`;
+};
+const JST = { timeZone: 'Asia/Tokyo' };
+const dayKey = iso => new Date(iso).toLocaleDateString('sv-SE', JST); // YYYY-MM-DD（日本時間）
+const todayKey = () => new Date().toLocaleDateString('sv-SE', JST);
+const fmtDay = iso => new Date(iso).toLocaleDateString('ja-JP', { ...JST, month: 'numeric', day: 'numeric', weekday: 'short' });
+const fmtTime = iso => new Date(iso).toLocaleTimeString('ja-JP', { ...JST, hour: '2-digit', minute: '2-digit' });
+const fmtFull = iso => new Date(iso).toLocaleString('ja-JP', { ...JST, year: 'numeric', month: 'numeric', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+
+function statusText(m) {
+  if (m.n === 'STATUS_POSTPONED') return '延期';
+  if (m.n === 'STATUS_CANCELED') return '中止';
+  if (m.s === 'in') return m.sd || '試合中';
+  if (m.s === 'post') return m.n === 'STATUS_FINAL_PEN' || m.h.pen != null ? 'PK' : m.n === 'STATUS_FINAL_AET' ? '延長' : '終了';
+  return fmtTime(m.d);
+}
+function stageText(m) {
+  let s = STAGE[m.st] || m.st;
+  if (m.g) s = groupJa(m.g);
+  if (m.leg) s += ` 第${m.leg}戦`;
+  return s;
+}
+function groupJa(g) {
+  const x = /Group ([A-D])(\d)/.exec(g || '');
+  return x ? `リーグ${x[1]} グループ${x[2]}` : (g || '').replace('Group', 'グループ');
+}
+
+function matchRow(m, cid, y, opts = {}) {
+  const pre = m.s === 'pre';
+  const hw = m.s === 'post' && (m.h.w || (m.adv && m.adv === m.h.id));
+  const aw = m.s === 'post' && (m.a.w || (m.adv && m.adv === m.a.id));
+  const live = m.s === 'in';
+  const pen = m.h.pen != null ? `<small>PK ${m.h.pen}-${m.a.pen}</small>` : '';
+  const sub = opts.compTag ? SHORT[cid] : opts.stage ? stageText(m) : '';
+  return `<a class="match" href="#/m/${cid}/${y}/${m.id}">
+    <div class="time ${live ? 'live' : ''}">${esc(statusText(m))}${sub ? `<div class="tag">${esc(sub)}</div>` : ''}</div>
+    <div class="team home ${hw ? 'win' : ''}"><span>${esc(team(m.h.id).s)}</span>${logo(m.h.id)}</div>
+    <div class="score ${pre ? 'pre' : ''}">${pre ? 'vs' : `${m.h.sc}-${m.a.sc}`}${pen}</div>
+    <div class="team ${aw ? 'win' : ''}">${logo(m.a.id)}<span>${esc(team(m.a.id).s)}</span></div>
+  </a>`;
+}
+
+function matchesByDay(list, render) {
+  let html = '', last = '';
+  const today = todayKey();
+  for (const x of list) {
+    const k = dayKey(x.m.d);
+    if (k !== last) {
+      if (last) html += '</div>';
+      const isToday = k === today;
+      html += `<div class="card" ${isToday ? 'id="today"' : ''} data-day="${k}"><div class="daylabel ${isToday ? 'today' : ''}">${fmtDay(x.m.d)}${isToday ? '（今日）' : ''}</div>`;
+      last = k;
+    }
+    html += render(x);
+  }
+  return html + (last ? '</div>' : '');
+}
+
+function tabs(items, active) {
+  return `<div class="tabs">${items.map(([k, l]) => `<button data-tab="${k}" class="${k === active ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+}
+function bindTabs(root, handler) {
+  root.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => handler(b.dataset.tab)));
+}
+
+const app = document.getElementById('app');
+const setNav = active => {
+  document.getElementById('compnav').innerHTML =
+    `<a href="#/" class="${active === 'home' ? 'on' : ''}">ホーム</a>` +
+    INDEX.comps.map(c => `<a href="#/c/${c.id}" class="${active === c.id ? 'on' : ''}">${esc(c.name)}</a>`).join('');
+};
+
+// ===== ホーム =====
+async function viewHome() {
+  setNav('home');
+  const all = [];
+  await Promise.all(INDEX.comps.map(async c => {
+    const s = currentSeason(c);
+    const ms = (await load(`${c.id}/${s.y}/matches.json`)) || [];
+    ms.forEach(m => all.push({ m, cid: c.id, y: s.y }));
+  }));
+  all.sort((a, b) => a.m.d.localeCompare(b.m.d));
+  const now = Date.now(), today = todayKey();
+  const live = all.filter(x => x.m.s === 'in');
+  const todays = all.filter(x => dayKey(x.m.d) === today && x.m.s !== 'in');
+  const recent = all.filter(x => x.m.s === 'post' && dayKey(x.m.d) < today && now - new Date(x.m.d) < 3 * 864e5);
+  const next = all.filter(x => x.m.s === 'pre' && dayKey(x.m.d) > today).slice(0, 15);
+  const row = x => matchRow(x.m, x.cid, x.y, { compTag: true });
+  const section = (title, list, byDay) => list.length
+    ? `<h2>${title}</h2>` + (byDay ? matchesByDay(list, row) : `<div class="card">${list.map(row).join('')}</div>`)
+    : '';
+
+  app.innerHTML =
+    `<h2>大会</h2><div class="comps">${INDEX.comps.map(c => {
+      const s = currentSeason(c);
+      return `<a class="card compcard" href="#/c/${c.id}">${c.logo ? `<img class="logo lg" src="${esc(c.logo)}" alt="">` : ''}${esc(c.name)}<span class="sub">${s.label}シーズン</span></a>`;
+    }).join('')}</div>` +
+    section('<span style="color:var(--live)">●</span> 試合中', live) +
+    section('今日の試合', todays) +
+    section('最近の結果', recent.reverse(), true) +
+    section('これからの試合', next, true) +
+    (live.length + todays.length + recent.length + next.length ? '' : '<p class="empty">直近の試合はありません</p>') +
+    footer();
+}
+
+// ===== 大会 =====
+async function viewComp(cid, y, tab) {
+  const c = comp(cid);
+  if (!c) return viewHome();
+  setNav(cid);
+  const season = c.seasons.find(s => String(s.y) === String(y)) || currentSeason(c);
+  y = season.y;
+  const [ms, st] = await Promise.all([load(`${cid}/${y}/matches.json`), load(`${cid}/${y}/standings.json`)]);
+  const matches = ms || [];
+  const tabList = c.type === 'league'
+    ? [['table', '順位表'], ['games', '日程・結果']]
+    : [['table', c.type === 'unl' ? 'グループ' : '順位表'], ['ko', '勝ち上がり'], ['games', '日程・結果']];
+  if (!tab || !tabList.some(t => t[0] === tab)) tab = tabList[0][0];
+
+  let body = '';
+  if (tab === 'table') body = standingsHtml(c, st || []);
+  if (tab === 'ko') body = knockoutHtml(c, y, matches);
+  if (tab === 'games') body = gamesHtml(c, y, matches);
+
+  app.innerHTML = `
+    <div class="pagehead">${c.logo ? `<img class="logo lg" src="${esc(c.logo)}" alt="">` : ''}
+      <div><h1>${esc(c.name)}</h1>
+      <select id="season">${c.seasons.map(s => `<option value="${s.y}" ${s.y === y ? 'selected' : ''}>${s.label}シーズン</option>`).join('')}</select></div>
+    </div>
+    ${flowHtml(c, matches)}
+    ${tabList.length > 1 ? tabs(tabList, tab) : ''}
+    <div id="body">${body}</div>${footer()}`;
+  document.getElementById('season').addEventListener('change', e => { location.hash = `#/c/${cid}/${e.target.value}/${tab}`; });
+  bindTabs(app, t => { history.replaceState(null, '', `#/c/${cid}/${y}/${t}`); viewComp(cid, y, t); });
+  if (tab === 'games') {
+    const target = document.getElementById('today') ||
+      [...app.querySelectorAll('[data-day]')].find(el => el.dataset.day >= todayKey());
+    if (target) target.scrollIntoView({ block: 'start' });
+  }
+}
+
+function flowHtml(c, matches) {
+  const total = matches.length, done = matches.filter(m => m.s === 'post').length;
+  if (c.type === 'league') {
+    const pct = total ? Math.round(done / total * 100) : 0;
+    const first = matches[0], last = matches[matches.length - 1];
+    return `<div class="card" style="margin-top:12px;padding:12px 12px 4px">
+      <div style="display:flex;justify-content:space-between;font-size:13px"><b>シーズンの進み具合</b><span>${done} / ${total} 試合（${pct}%）</span></div>
+      <div class="progress"><div style="width:${pct}%"></div></div>
+      <div class="explain" style="padding:4px 0 10px">${first ? `${fmtDay(first.d)} 開幕 → ${fmtDay(last.d)} 最終節。` : ''}全チームがホーム&アウェイで2回ずつ対戦（総当たり）。勝ち3点・引き分け1点で順位を決める。</div>
+    </div>`;
+  }
+  const steps = FLOW[c.type];
+  let nowIdx = -1;
+  const info = steps.map(s => {
+    const ms = matches.filter(m => s.stages.includes(m.st));
+    const d = ms.filter(m => m.s === 'post').length;
+    const state = ms.length && d === ms.length ? 'done' : d > 0 || ms.some(m => m.s === 'in') ? 'now' : '';
+    return { s, ms, state };
+  });
+  // 進行中が無ければ「次に始まる段階」を現在とする
+  if (!info.some(x => x.state === 'now')) {
+    const i = info.findIndex(x => x.state !== 'done');
+    if (i > 0 && info[i - 1].state === 'done' && i < info.length) info[i].state = info[i].ms.length ? 'now' : '';
+  }
+  nowIdx = info.findIndex(x => x.state === 'now');
+  const cur = info[nowIdx >= 0 ? nowIdx : info.every(x => x.state === 'done') ? info.length - 1 : 0];
+  const final = matches.find(m => m.st === 'final' && m.s === 'post');
+  const champ = final && (final.adv || (final.h.w ? final.h.id : final.a.w ? final.a.id : null));
+  return `<div class="card" style="margin-top:12px">
+    <div class="flow">${info.map(x => {
+      const range = x.ms.length ? fmtDay(x.ms[0].d).replace(/\(.\)/, '') + '〜' : '未定';
+      return `<div class="step ${x.state}"><div class="dot">${x.state === 'done' ? '✓' : ''}</div><b>${x.s.label}</b><small>${range}</small></div>`;
+    }).join('')}</div>
+    ${champ ? `<a class="champ" href="#/t/${champ}">🏆 優勝 ${logo(champ)} ${esc(team(champ).n)}</a>` : `<div class="explain"><b style="color:var(--text)">${cur.s.label.replace('<br>', '')}</b>：${cur.s.desc}</div>`}
+  </div>`;
+}
+
+function standingsHtml(c, groups) {
+  if (!groups.length) return '<p class="empty">順位表はまだありません</p>';
+  const notes = new Map();
+  const table = g => `<table class="st"><thead><tr><th>#</th><th style="text-align:left">チーム</th><th>試</th><th class="hide-sm">勝</th><th class="hide-sm">分</th><th class="hide-sm">負</th><th>差</th><th>点</th></tr></thead><tbody>
+    ${[...g.rows].sort((a, b) => (+a.r || 99) - (+b.r || 99)).map(r => {
+      if (r.note) notes.set(r.note.t, r.note.c);
+      return `<tr><td class="rk" style="border-left-color:${r.note ? esc(r.note.c) : 'transparent'}">${esc(r.r)}</td>
+        <td class="tm"><a href="#/t/${r.id}">${logo(r.id)}<span>${esc(team(r.id).s)}</span></a></td>
+        <td>${esc(r.p)}</td><td class="hide-sm">${esc(r.w)}</td><td class="hide-sm">${esc(r.d)}</td><td class="hide-sm">${esc(r.l)}</td>
+        <td>${esc(r.gd)}</td><td class="pts">${esc(r.pts)}</td></tr>`;
+    }).join('')}</tbody></table>`;
+  let html = '';
+  if (c.type === 'unl') {
+    let lastLeague = '';
+    for (const g of groups) {
+      const lg = (/Group ([A-D])/.exec(g.name) || [])[1];
+      if (lg && lg !== lastLeague) { html += `<h2>リーグ${lg}</h2>`; lastLeague = lg; }
+      html += `<h3>${esc(groupJa(g.name))}</h3><div class="card">${table(g)}</div>`;
+    }
+  } else {
+    html = groups.map(g => `<div class="card">${table(g)}</div>`).join('');
+  }
+  const legend = [...notes].map(([t, col]) => `<span><i style="background:${esc(col)}"></i>${esc(noteJa(t))}</span>`).join('');
+  return (legend ? `<div class="legend">${legend}</div>` : '') + html;
+}
+function noteJa(t) {
+  return t
+    .replace(/Champions League( Qualifying)?/gi, (_, q) => q ? 'CL予選' : 'CL出場')
+    .replace(/Europa League( Qualifying)?/gi, (_, q) => q ? 'EL予選' : 'EL出場')
+    .replace(/Conference League( Qualifying)?/gi, (_, q) => q ? 'ECL予選' : 'ECL出場')
+    .replace(/Qualifies for round of 16/gi, 'ラウンド16進出')
+    .replace(/Qualifies for (the )?(knockout round )?playoffs?/gi, 'プレーオフ進出')
+    .replace(/Qualifies for QFs/gi, '準々決勝進出')
+    .replace(/Relegation or playoffs/gi, '降格または入れ替え戦')
+    .replace(/(Relegation|Promotion) playoffs?/gi, '入れ替え戦')
+    .replace(/Relegation/gi, '降格').replace(/Promotion/gi, '昇格').replace(/Eliminated/gi, '敗退')
+    .replace(/;/g, '／');
+}
+
+function knockoutHtml(c, y, matches) {
+  const order = Object.keys(STAGE).filter(s => s !== 'league' && s !== 'league-phase');
+  const stages = order.filter(s => matches.some(m => m.st === s));
+  if (!stages.length) return '<p class="empty">ノックアウトステージはまだ始まっていません</p>';
+  return stages.map(s => {
+    const ties = new Map();
+    for (const m of matches.filter(m => m.st === s)) {
+      const key = [m.h.id, m.a.id].sort().join('-');
+      if (!ties.has(key)) ties.set(key, []);
+      ties.get(key).push(m);
+    }
+    return `<div class="round"><h2>${STAGE[s]}</h2><div class="card">${[...ties.values()].map(legs => tieHtml(c, y, legs)).join('')}</div></div>`;
+  }).join('');
+}
+function tieHtml(c, y, legs) {
+  legs.sort((a, b) => a.d.localeCompare(b.d));
+  const A = legs[0].h.id, B = legs[0].a.id;
+  let ga = 0, gb = 0, played = 0;
+  for (const m of legs) if (m.s === 'post') {
+    played++;
+    const [x, z] = m.h.id === A ? [m.h.sc, m.a.sc] : [m.a.sc, m.h.sc];
+    ga += +x; gb += +z;
+  }
+  const lastLeg = legs[legs.length - 1];
+  let adv = lastLeg.adv;
+  if (!adv && lastLeg.s === 'post') {
+    if (legs.length === 1) adv = lastLeg.h.w ? lastLeg.h.id : lastLeg.a.w ? lastLeg.a.id : null;
+    else if (ga !== gb) adv = ga > gb ? A : B;
+    else if (lastLeg.h.w || lastLeg.a.w) adv = lastLeg.h.w ? lastLeg.h.id : lastLeg.a.id;
+  }
+  const row = (id, g) => `<div class="row ${adv === id ? 'adv' : ''}">${logo(id)}<span><a href="#/t/${id}">${esc(team(id).s)}</a></span><b class="agg">${played ? g : ''}</b>${adv === id ? '<em class="badge">勝ち上がり</em>' : ''}</div>`;
+  return `<div class="tie">${row(A, ga)}${row(B, gb)}
+    <div class="legs">${legs.map(m => `<a href="#/m/${c.id}/${y}/${m.id}">${m.leg ? `第${m.leg}戦 ` : ''}${fmtDay(m.d)} ${m.s === 'pre' ? fmtTime(m.d) : `${esc(team(m.h.id).ab)} ${m.h.sc}-${m.a.sc} ${esc(team(m.a.id).ab)}${m.h.pen != null ? `（PK ${m.h.pen}-${m.a.pen}）` : ''}`}</a>`).join('')}</div></div>`;
+}
+
+function gamesHtml(c, y, matches) {
+  if (!matches.length) return '<p class="empty">日程はまだ発表されていません</p>';
+  return matchesByDay(matches.map(m => ({ m })), x => matchRow(x.m, c.id, y, { stage: c.type !== 'league' }));
+}
+
+// ===== 試合詳細 =====
+async function viewMatch(cid, y, id, tab) {
+  const c = comp(cid);
+  setNav(cid);
+  const [ms, d] = await Promise.all([load(`${cid}/${y}/matches.json`), load(`m/${id}.json`)]);
+  const m = (ms || []).find(x => x.id === id);
+  if (!m) { app.innerHTML = '<p class="empty">試合が見つかりません</p>'; return; }
+  const H = team(m.h.id), A = team(m.a.id);
+  const ev = (d && d.events) || [];
+  const scorers = side => ev.filter(e => ['goal', 'pen', 'og'].includes(e.t) && e.team === side)
+    .map(e => `${esc(e.p[0] || '')} ${esc(e.min)}${e.t === 'pen' ? '(PK)' : e.t === 'og' ? '(OG)' : ''}`).join('<br>');
+  const q = encodeURIComponent;
+  const season = c.seasons.find(s => s.y === +y);
+  const vids = m.s === 'post' ? `<div class="videos">
+      <a href="https://www.youtube.com/results?search_query=${q(`${H.n} vs ${A.n} highlights ${season ? season.label : ''}`)}" target="_blank" rel="noopener">${YT_ICON}ハイライト</a>
+      <a href="https://www.youtube.com/results?search_query=${q(`${H.n} vs ${A.n} extended highlights`)}" target="_blank" rel="noopener">${YT_ICON}ロングハイライト</a>
+    </div><div class="note">YouTubeの検索結果が開きます</div>` : '';
+  const big = m.s === 'pre'
+    ? `<div class="big" style="font-size:20px">${fmtTime(m.d)}<small>キックオフ</small></div>`
+    : `<div class="big">${m.h.sc} - ${m.a.sc}<small style="${m.s === 'in' ? 'color:var(--live);font-weight:700' : ''}">${m.h.pen != null ? `PK戦 ${m.h.pen}-${m.a.pen}` : esc(statusText(m))}</small></div>`;
+
+  const tabList = [['stats', 'スタッツ'], ['lineup', 'スタメン'], ['timeline', '経過']];
+  if (!tab) tab = 'stats';
+  let body = '';
+  if (!d) body = `<p class="empty">${m.s === 'pre' ? 'スタメンやスタッツは試合が始まると表示されます' : '詳細データはまだありません'}</p>`;
+  else if (tab === 'stats') body = statsHtml(d);
+  else if (tab === 'lineup') body = lineupHtml(m, d);
+  else body = timelineHtml(m, d);
+
+  app.innerHTML = `
+    <button class="back" onclick="history.back()">‹ 戻る</button>
+    <div class="card mhead">
+      <div class="meta"><a href="#/c/${cid}/${y}">${esc(c.name)}</a> · ${esc(stageText(m))}</div>
+      <div class="meta">${fmtFull(m.d)}${d && d.venue ? ` · ${esc(d.venue)}` : ''}</div>
+      <div class="teams">
+        <a href="#/t/${m.h.id}">${logo(m.h.id, 'xl')}${esc(H.s)}</a>${big}<a href="#/t/${m.a.id}">${logo(m.a.id, 'xl')}${esc(A.s)}</a>
+      </div>
+      ${d ? `<div class="scorers"><div>${scorers(m.h.id)}</div><div>${scorers(m.a.id)}</div></div>` : ''}
+      ${vids}
+    </div>
+    ${d ? tabs(tabList, tab) : ''}<div id="body">${body}</div>${footer()}`;
+  bindTabs(app, t => { history.replaceState(null, '', `#/m/${cid}/${y}/${id}/${t}`); viewMatch(cid, y, id, t); });
+  bindLineupSwitch(m, d);
+}
+
+function statsHtml(d) {
+  const s = d.stats || {};
+  const num = v => parseFloat(v) || 0;
+  const rows = STATS.map(([k, label, kind, a, b]) => {
+    let h, w;
+    if (kind === 'rate') {
+      if (!s[a] || !s[b]) return '';
+      const r = side => (num(s[b][side]) ? Math.round(num(s[a][side]) / num(s[b][side]) * 100) : 0);
+      h = r('home'); w = r('away');
+    } else {
+      if (!s[k]) return '';
+      h = num(s[k].home); w = num(s[k].away);
+    }
+    const unit = kind ? '%' : '';
+    const max = Math.max(h + w, 1);
+    return `<div class="stat"><div class="lbl"><b>${h}${unit}</b><span>${label}</span><b>${w}${unit}</b></div>
+      <div class="bars"><div class="h"><i style="width:${h / max * 100}%"></i></div><div class="a"><i style="width:${w / max * 100}%"></i></div></div></div>`;
+  }).join('');
+  return rows ? `<div class="card">${rows}</div>` : '<p class="empty">スタッツはありません</p>';
+}
+
+// ポジションの略号から「縦の位置（深さ）」と「左右」を推定して、フォーメーション通りに並べる
+function depthOf(pos) {
+  if (pos === 'G') return 0;
+  if (/WB$/.test(pos)) return 1.5;
+  if (/^(CD|SW|LB|RB|D)/.test(pos)) return 1;
+  if (/^DM/.test(pos)) return 2;
+  if (/^AM/.test(pos)) return 4;
+  if (/^(F|CF|LF|RF|LW|RW|ST|S)/.test(pos)) return 5;
+  return 3;
+}
+function sideOf(pos) {
+  if (/-L$/.test(pos)) return 1;
+  if (/-R$/.test(pos)) return 3;
+  if (/^L/.test(pos)) return 0;
+  if (/^R/.test(pos)) return 4;
+  return 2;
+}
+function formationRows(players, form) {
+  const starters = players.filter(p => p.st);
+  const gk = starters.filter(p => p.pos === 'G');
+  const out = starters.filter(p => p.pos !== 'G')
+    .sort((a, b) => depthOf(a.pos) - depthOf(b.pos) || Math.abs(sideOf(a.pos) - 2) - Math.abs(sideOf(b.pos) - 2));
+  let lines = (form || '').split('-').map(Number).filter(Boolean);
+  if (lines.reduce((x, y) => x + y, 0) !== out.length) {
+    lines = [];
+    const groups = {};
+    out.forEach(p => { groups[depthOf(p.pos)] = (groups[depthOf(p.pos)] || 0) + 1; });
+    Object.keys(groups).sort().forEach(k => lines.push(groups[k]));
+  }
+  const rows = [gk];
+  let i = 0;
+  for (const n of lines) { rows.push(out.slice(i, i + n).sort((a, b) => sideOf(a.pos) - sideOf(b.pos))); i += n; }
+  return rows;
+}
+let lineupSide = 'home';
+function lineupHtml(m, d) {
+  const side = d.lineups[lineupSide] ? lineupSide : 'home';
+  const L = d.lineups[side];
+  if (!L || !L.players.length) return '<p class="empty">スタメンはまだ発表されていません</p>';
+  const tid = side === 'home' ? m.h.id : m.a.id;
+  const ev = d.events || [];
+  const marks = name => {
+    let s = '';
+    const mine = ev.filter(e => e.p[0] === name);
+    mine.forEach(e => {
+      if (e.t === 'goal' || e.t === 'pen') s += '⚽';
+      if (e.t === 'og') s += '⚽(OG)';
+      if (e.t === 'yc') s += '<i class="yc"></i>';
+      if (e.t === 'rc' || e.t === 'rc2') s += '<i class="rc"></i>';
+    });
+    return s;
+  };
+  const rows = formationRows(L.players, L.form);
+  let dots = '';
+  rows.forEach((row, ri) => {
+    const yPos = 92 - ri * (84 / Math.max(rows.length - 1, 1));
+    row.forEach((p, pi) => {
+      const x = (pi + 1) / (row.length + 1) * 100;
+      dots += `<div class="pl" style="left:${x}%;top:${yPos}%"><div class="num">${esc(p.num)}</div><div class="nm">${esc(p.n)}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></div>`;
+    });
+  });
+  const bench = L.players.filter(p => !p.st);
+  return `<div class="tabs" id="side"><button data-side="home" class="${side === 'home' ? 'on' : ''}">${esc(team(m.h.id).s)}</button><button data-side="away" class="${side === 'away' ? 'on' : ''}">${esc(team(m.a.id).s)}</button></div>
+    <div class="formation">${logo(tid)}<b>${esc(L.form || '')}</b></div>
+    <div class="pitch">${dots}</div>
+    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<div class="p"><span class="no">${esc(p.num)}</span><span class="grow">${esc(p.n)} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</div>`).join('')}</div>`;
+}
+function bindLineupSwitch(m, d) {
+  app.querySelectorAll('#side button').forEach(b => b.addEventListener('click', () => {
+    lineupSide = b.dataset.side;
+    document.getElementById('body').innerHTML = lineupHtml(m, d);
+    bindLineupSwitch(m, d);
+  }));
+}
+
+function timelineHtml(m, d) {
+  const ev = (d.events || []);
+  if (!ev.length) return '<p class="empty">記録はありません</p>';
+  const icon = { goal: '⚽', pen: '⚽ PK', og: '⚽ OG', yc: '<i class="yc"></i>', rc: '<i class="rc"></i>', rc2: '<i class="yc"></i><i class="rc"></i>', sub: '🔄' };
+  // 交代は participants の1人目が入った選手、2人目が出た選手
+  const txt = e => e.t === 'sub' ? `${icon.sub} ↑${esc(e.p[0] || '')}${e.p[1] ? ` <span class="x">↓${esc(e.p[1])}</span>` : ''}` : `${icon[e.t]} ${esc(e.p[0] || '')}`;
+  return `<div class="card tl">${ev.map(e => {
+    const home = e.team === m.h.id;
+    return `<div class="e"><div class="l">${home ? txt(e) : ''}</div><div class="m">${esc(e.min)}</div><div>${home ? '' : txt(e)}</div></div>`;
+  }).join('')}</div>`;
+}
+
+// ===== チーム =====
+async function viewTeam(id, tab) {
+  setNav(null);
+  const t = team(id);
+  const roster = await load(`t/${id}.json`);
+  const all = [];
+  await Promise.all(INDEX.comps.flatMap(c => c.seasons.map(async s => {
+    const ms = (await load(`${c.id}/${s.y}/matches.json`)) || [];
+    ms.filter(m => m.h.id === id || m.a.id === id).forEach(m => all.push({ m, cid: c.id, y: s.y }));
+  })));
+  all.sort((a, b) => a.m.d.localeCompare(b.m.d));
+  if (!tab) tab = 'players';
+
+  let body = '';
+  if (tab === 'players') {
+    if (!roster) body = '<p class="empty">選手一覧はまだありません</p>';
+    else body = Object.entries(POS_GROUP).map(([k, label]) => {
+      const ps = roster.players.filter(p => (p.pos || '').startsWith(k)).sort((a, b) => (+a.num || 99) - (+b.num || 99));
+      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<div class="p"><span class="no">${esc(p.num || '')}</span><span class="grow">${esc(p.n)}</span><span class="x">${esc(p.nat || '')}${p.age ? ` · ${p.age}歳` : ''}</span></div>`).join('')}</div>` : '';
+    }).join('');
+  } else {
+    const next = all.filter(x => x.m.s !== 'post');
+    const done = all.filter(x => x.m.s === 'post').reverse();
+    const row = x => matchRow(x.m, x.cid, x.y, { compTag: true });
+    body = (next.length ? `<h2>これからの試合</h2><div class="card">${next.slice(0, 10).map(x => `<div class="daylabel">${fmtDay(x.m.d)}</div>${row(x)}`).join('')}</div>` : '') +
+      (done.length ? `<h2>結果</h2><div class="card">${done.map(x => `<div class="daylabel">${fmtDay(x.m.d)}</div>${row(x)}`).join('')}</div>` : '');
+    if (!body) body = '<p class="empty">試合はありません</p>';
+  }
+  app.innerHTML = `
+    <button class="back" onclick="history.back()">‹ 戻る</button>
+    <div class="pagehead">${logo(id, 'xl')}<div><h1>${esc(t.n)}</h1><div class="sub">${roster ? `${roster.players.length}人` : ''}</div></div></div>
+    ${tabs([['players', '選手'], ['games', '試合']], tab)}<div id="body">${body}</div>${footer()}`;
+  bindTabs(app, k => { history.replaceState(null, '', `#/t/${id}/${k}`); viewTeam(id, k); });
+}
+
+function footer() {
+  return '<p class="foot">データ：ESPN ／ 時刻はすべて日本時間</p>';
+}
+
+// ===== ルーティング =====
+async function route() {
+  const p = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  window.scrollTo(0, 0);
+  try {
+    if (p[0] === 'c') await viewComp(p[1], p[2], p[3]);
+    else if (p[0] === 'm') await viewMatch(p[1], p[2], p[3], p[4]);
+    else if (p[0] === 't') await viewTeam(p[1], p[2]);
+    else await viewHome();
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = '<p class="empty">表示できませんでした。再読み込みしてください。</p>';
+  }
+}
+
+(async function init() {
+  [INDEX, TEAMS] = await Promise.all([load('index.json'), load('teams.json')]);
+  if (!INDEX) { app.innerHTML = '<p class="empty">データがまだありません</p>'; return; }
+  TEAMS = TEAMS || {};
+  if (INDEX.updated) {
+    document.getElementById('updated').textContent = '更新 ' + new Date(INDEX.updated).toLocaleString('ja-JP', { ...JST, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  window.addEventListener('hashchange', route);
+  route();
+})();
