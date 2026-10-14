@@ -397,6 +397,115 @@ def update_highlights(teams):
     print("  YouTube 検索:", quota["used"], "/", YT_DAILY_LIMIT, "（本日分）")
 
 
+AF = "https://v3.football.api-sports.io"
+AF_DAILY_LIMIT = 90   # API-Football 無料プランは1日100回
+AF_LEAGUES = {"premier": 39, "laliga": 140, "ligue1": 61, "ucl": 2, "unl": 5}
+
+
+def af_get(path, key):
+    req = urllib.request.Request(AF + path, headers={"x-apisports-key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.load(r)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        print("  API-Football 失敗:", path, e, file=sys.stderr)
+        return None
+    if d.get("errors"):
+        print("  API-Football エラー:", path, d["errors"], file=sys.stderr)
+        return None
+    time.sleep(6.5)  # 無料プランは1分間に10回まで
+    return d.get("response", [])
+
+
+def surname(name):
+    parts = [p for p in re.split(r"[\s.]+", norm(name).strip()) if p]
+    return parts[-1] if parts else ""
+
+
+def update_photos(teams):
+    """API-Football の所属選手データから顔写真を探し、ESPN の選手と背番号・名字で結びつけて data/photos.json に保存する。"""
+    key = os.environ.get("AF_KEY")
+    if not key:
+        return
+    ph = load("photos.json", {"teams": {}, "players": {}})
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    quota = ph.get("_quota", {})
+    if quota.get("day") != today:
+        quota = {"day": today, "used": 0}
+
+    def call(path):
+        if quota["used"] >= AF_DAILY_LIMIT:
+            return None
+        quota["used"] += 1
+        return af_get(path, key)
+
+    # ① ESPN のチームを API-Football のチームIDに対応づける（無料プランで見られる2024年の大会参加チームから）
+    espn_ids = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(ROOT, "t", "*.json")))
+    unmatched = [i for i in espn_ids if i not in ph["teams"]]
+    if unmatched and not ph.get("_leagues_done"):
+        for lid in AF_LEAGUES.values():
+            for r in call("/teams?league=%d&season=2024" % lid) or []:
+                ph.setdefault("_af_teams", {})[str(r["team"]["id"])] = r["team"]["name"]
+        ph["_leagues_done"] = True
+    with open(os.path.join(NAMES, "af_teams.json"), encoding="utf-8") as f:
+        fixed = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    for tid, af_id in fixed.items():  # 手で指定した対応を優先
+        if ph["teams"].get(tid, {}).get("af") != af_id:
+            ph["teams"][tid] = {"af": af_id, "checked": ""}
+    unmatched = [i for i in espn_ids if i not in ph["teams"]]
+    national = {m[k]["id"] for p in glob.glob(os.path.join(ROOT, "unl", "*", "matches.json"))
+                for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+    by_name = {norm(n): i for i, n in ph.get("_af_teams", {}).items()}
+    for tid in unmatched:
+        t = teams.get(tid, {})
+        cand = [c for c in (norm(t.get("n", "")), norm(t.get("s", ""))) if c]
+        af_id = next((by_name[c] for c in cand if c in by_name), None)
+        if af_id is None:
+            af_id = next((i for n, i in by_name.items() if any(c in n or n in c for c in cand)), None)
+        if af_id is None:
+            # 正式名 → 短縮名の順に検索。女子・ユースを除き、代表とクラブの区別も合うものだけ使う
+            res = None
+            for word in dict.fromkeys(re.sub(r"[^a-z ]", " ", c).strip()[:25] for c in cand):
+                if len(word) < 3:
+                    continue
+                res = call("/teams?search=%s" % urllib.parse.quote(re.sub(r"\s+", " ", word)))
+                if res is None:
+                    break
+                res = [r for r in res if not re.search(r" W$| U\d\d|women|femin|reserve| II$| B$", r["team"]["name"], re.I)
+                       and bool(r["team"].get("national")) == (tid in national)]
+                if res:
+                    break
+            if res is None:
+                continue
+            af_id = str(res[0]["team"]["id"]) if res else ""
+            if res:
+                ph.setdefault("_af_teams", {})[af_id] = res[0]["team"]["name"]
+        ph["teams"][tid] = {"af": af_id, "checked": ""}
+
+    # ② 確認が古い順にチームの所属選手（写真付き）を取り、ESPN の選手一覧と照合する
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    for checked, tid in sorted((v["checked"], k) for k, v in ph["teams"].items() if v.get("af")):
+        if checked and checked > week_ago:
+            continue  # 1週間以内に確認済み
+        res = call("/players/squads?team=%s" % ph["teams"][tid]["af"])
+        if res is None:
+            break
+        squad = res[0]["players"] if res else []
+        for p in load("t/%s.json" % tid, {}).get("players", []):
+            sn = surname(p["n"])
+            same_num = [s for s in squad if p.get("num") and str(s.get("number")) == str(p["num"])]
+            hit = next((s for s in same_num if surname(s["name"]) == sn or norm(s["name"]) in norm(p["n"])), None)
+            if hit is None:
+                by_sn = [s for s in squad if surname(s["name"]) == sn]
+                hit = by_sn[0] if len(by_sn) == 1 else None
+            if hit and hit.get("photo"):
+                ph["players"][p["n"]] = hit["photo"]
+        ph["teams"][tid]["checked"] = today
+    ph["_quota"] = quota
+    save("photos.json", ph)
+    print("  顔写真:", len(ph["players"]), "人 / API-Football 本日", quota["used"], "回")
+
+
 def main():
     with_rosters = "--rosters" in sys.argv
     teams = load("teams.json", {})
@@ -444,6 +553,8 @@ def main():
     save("teams.json", teams)
     build_names(lookup_new=with_rosters)
     update_highlights(teams)
+    if with_rosters:
+        update_photos(teams)
     # 中身が変わったときだけ更新時刻を進める（変化のない自動実行で記録が増えないように）
     old = load("index.json", {})
     index["updated"] = old.get("updated") if (old.get("comps") == index["comps"] and not changed) else \

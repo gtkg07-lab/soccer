@@ -33,6 +33,7 @@ jobs:
       - name: データ取得
         env:
           YT_API_KEY: ${{ secrets.YT_API_KEY }}
+          AF_KEY: ${{ secrets.AF_KEY }}
         run: |
           if [ "${{ github.event.schedule }}" = "0 15 * * *" ]; then
             python scripts/fetch.py --rosters

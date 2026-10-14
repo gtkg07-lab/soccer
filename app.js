@@ -61,7 +61,7 @@ function load(path) {
   }
   return cache[path];
 }
-let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} };
+let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} }, PHOTOS = {};
 // 日本語名があれば使う（en は YouTube 検索用に英語名を残す）
 const team = id => {
   const t = TEAMS[id] || { n: '未定', s: '未定', logo: '' };
@@ -69,6 +69,10 @@ const team = id => {
   return ja ? { ...t, en: t.n, n: ja[0], s: ja[1] } : { ...t, en: t.n };
 };
 const pn = name => NAMES.players[name] || name || '';
+// 顔写真（無ければ背番号の丸）
+const avatar = (p, cls = 'av') => PHOTOS[p.n]
+  ? `<img class="${cls}" src="${esc(PHOTOS[p.n])}" alt="" loading="lazy" onerror="this.className='${cls} none';this.removeAttribute('src')">`
+  : `<span class="${cls} none"></span>`;
 const country = en => (NAMES.countries || {})[en] || en || '';
 // フォーメーション図では長いカタカナ名を最後の部分（姓）だけにする
 const pnShort = name => { const j = pn(name); return j.includes('・') ? j.split('・').pop() : j; };
@@ -469,14 +473,14 @@ function lineupHtml(m, d) {
     const yPos = 92 - ri * (84 / Math.max(rows.length - 1, 1));
     row.forEach((p, pi) => {
       const x = (pi + 1) / (row.length + 1) * 100;
-      dots += `<div class="pl" style="left:${x}%;top:${yPos}%"><div class="num">${esc(p.num)}</div><div class="nm">${esc(pnShort(p.n))}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></div>`;
+      dots += `<div class="pl" style="left:${x}%;top:${yPos}%">${PHOTOS[p.n] ? `<div class="face">${avatar(p, "pf")}<b>${esc(p.num)}</b></div>` : `<div class="num">${esc(p.num)}</div>`}<div class="nm">${esc(pnShort(p.n))}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></div>`;
     });
   });
   const bench = L.players.filter(p => !p.st);
   return `<div class="tabs" id="side"><button data-side="home" class="${side === 'home' ? 'on' : ''}">${esc(team(m.h.id).s)}</button><button data-side="away" class="${side === 'away' ? 'on' : ''}">${esc(team(m.a.id).s)}</button></div>
     <div class="formation">${logo(tid)}<b>${esc(L.form || '')}</b></div>
     <div class="pitch">${dots}</div>
-    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<div class="p"><span class="no">${esc(p.num)}</span><span class="grow">${esc(pn(p.n))} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</div>`).join('')}</div>`;
+    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<div class="p"><span class="no">${esc(p.num)}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</div>`).join('')}</div>`;
 }
 function bindLineupSwitch(m, d) {
   app.querySelectorAll('#side button').forEach(b => b.addEventListener('click', () => {
@@ -516,7 +520,7 @@ async function viewTeam(id, tab) {
     if (!roster) body = '<p class="empty">選手一覧はまだありません</p>';
     else body = Object.entries(POS_GROUP).map(([k, label]) => {
       const ps = roster.players.filter(p => (p.pos || '').startsWith(k)).sort((a, b) => (+a.num || 99) - (+b.num || 99));
-      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<div class="p"><span class="no">${esc(p.num || '')}</span><span class="grow">${esc(pn(p.n))}</span><span class="x">${esc(country(p.nat))}${p.age ? ` · ${p.age}歳` : ''}</span></div>`).join('')}</div>` : '';
+      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<div class="p"><span class="no">${esc(p.num || '')}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))}</span><span class="x">${esc(country(p.nat))}${p.age ? ` · ${p.age}歳` : ''}</span></div>`).join('')}</div>` : '';
     }).join('');
   } else {
     const next = all.filter(x => x.m.s !== 'post');
@@ -554,8 +558,10 @@ async function route() {
 
 (async function init() {
   let names;
-  [INDEX, TEAMS, names] = await Promise.all([load('index.json'), load('teams.json'), load('names_ja.json')]);
+  let photos;
+  [INDEX, TEAMS, names, photos] = await Promise.all([load('index.json'), load('teams.json'), load('names_ja.json'), load('photos.json')]);
   if (names) NAMES = names;
+  if (photos) PHOTOS = photos.players || {};
   if (!INDEX) { app.innerHTML = '<p class="empty">データがまだありません</p>'; return; }
   TEAMS = TEAMS || {};
   if (INDEX.updated) {

@@ -199,3 +199,10 @@ table.st td.pts { font-weight: 700; }
 
 .back { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--sub); margin-bottom: 4px; cursor: pointer; background: none; border: none; padding: 4px 0; }
 .foot { text-align: center; font-size: 11px; color: var(--sub); margin-top: 28px; }
+
+/* 顔写真 */
+.av { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; object-position: top; background: var(--line); flex: none; }
+.av.none, .pf.none { background: var(--line) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%239ca3af'%3E%3Ccircle cx='12' cy='9' r='4.5'/%3E%3Cpath d='M3 23c0-5 4-8 9-8s9 3 9 8z'/%3E%3C/svg%3E") center/80% no-repeat; }
+.pl .face { position: relative; }
+.pf { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; object-position: top; background: #fff; border: 2px solid #fff; display: block; }
+.pl .face b { position: absolute; right: -6px; bottom: -2px; background: #111; color: #fff; font-size: 9px; border-radius: 8px; padding: 0 4px; line-height: 14px; }
