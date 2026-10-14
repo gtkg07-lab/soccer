@@ -206,3 +206,12 @@ table.st td.pts { font-weight: 700; }
 .pl .face { position: relative; }
 .pf { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; object-position: top; background: #fff; border: 2px solid #fff; display: block; }
 .pl .face b { position: absolute; right: -6px; bottom: -2px; background: #111; color: #fff; font-size: 9px; border-radius: 8px; padding: 0 4px; line-height: 14px; }
+
+/* 写真のクレジット表示 */
+img[data-n] { cursor: pointer; }
+#toast { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto;
+  background: rgba(17,24,39,.95); color: #fff; font-size: 12px; line-height: 1.5; padding: 10px 14px; border-radius: 10px;
+  opacity: 0; transform: translateY(10px); transition: .2s; pointer-events: none; z-index: 50; }
+#toast.show { opacity: 1; transform: none; pointer-events: auto; }
+#toast a { color: #93c5fd; text-decoration: underline; }
+.foot a, .plist a { text-decoration: underline; }

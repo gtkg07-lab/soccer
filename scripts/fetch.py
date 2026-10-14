@@ -587,6 +587,70 @@ def update_wiki_photos():
     print("  Wikipedia の写真:", found, "人追加（合計", len(wiki), "人）")
 
 
+def commons_file(url):
+    """写真のURLから Wikimedia Commons のファイル名を取り出す（Commons 以外＝自由ライセンスでない可能性があるものは None）。"""
+    url = urllib.parse.unquote(url.split("?")[0])
+    if "Special:FilePath/" in url:
+        return url.split("Special:FilePath/", 1)[1].replace("_", " ")
+    m = re.search(r"/wikipedia/commons/thumb/[0-9a-f]/[0-9a-f]{2}/([^/]+)/", url)
+    return m.group(1).replace("_", " ") if m else None
+
+
+def update_photo_credits():
+    """Wikipedia の写真ごとに撮影者とライセンスを取得して保存する（CC ライセンスの表示義務のため）。
+    取得できない・自由ライセンスでない写真は使わない。"""
+    ph = load("photos.json", {"teams": {}, "players": {}})
+    wiki, credit = ph.get("wiki", {}), ph.setdefault("credit", {})
+    for n in [n for n in credit if n not in wiki]:
+        del credit[n]
+    todo = {}
+    for n, url in wiki.items():
+        if n in credit:
+            continue
+        f = commons_file(url)
+        if f is None:
+            credit[n] = None  # Commons 以外の写真は使わない
+        else:
+            todo.setdefault(f, []).append(n)
+    files = sorted(todo)
+    for i in range(0, len(files), 50):
+        chunk = files[i:i + 50]
+        params = {"action": "query", "format": "json", "prop": "imageinfo", "iiprop": "extmetadata|url",
+                  "iiextmetadatafilter": "Artist|LicenseShortName|LicenseUrl", "titles": "|".join("File:" + f for f in chunk)}
+        url = "https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(params)
+        d = None
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "soccer-app/1.0 (github.com/gtkg07-lab/soccer)"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    d = json.load(r)["query"]
+                break
+            except (OSError, ValueError, KeyError) as e:
+                print("  Commons 失敗:", e, file=sys.stderr)
+                time.sleep(30 * (attempt + 1))
+        if d is None:
+            continue
+        norm_map = {x["from"]: x["to"] for x in d.get("normalized", [])}
+        pages = {p["title"]: p for p in d.get("pages", {}).values()}
+        for f in chunk:
+            p = pages.get(norm_map.get("File:" + f, "File:" + f), {})
+            info = (p.get("imageinfo") or [{}])[0]
+            meta = info.get("extmetadata", {})
+            lic = meta.get("LicenseShortName", {}).get("value", "")
+            artist = re.sub(r"<[^>]+>", "", meta.get("Artist", {}).get("value", "")).strip()
+            ok = lic and re.search(r"CC|Public domain|PD|GFDL|Attribution", lic, re.I) and not re.search(r"fair use|non-free", lic, re.I)
+            for n in todo[f]:
+                credit[n] = {"a": html.unescape(artist)[:120] or "不明", "l": lic, "u": meta.get("LicenseUrl", {}).get("value", ""),
+                             "f": info.get("descriptionurl", "")} if ok else None
+        time.sleep(3)
+    for n, c in list(credit.items()):  # クレジットを確認できない写真は外す
+        if c is None:
+            wiki.pop(n, None)
+            del credit[n]
+    save("photos.json", ph)
+    print("  写真のクレジット:", len(credit), "件")
+
+
 def main():
     with_rosters = "--rosters" in sys.argv
     teams = load("teams.json", {})
@@ -637,6 +701,7 @@ def main():
     if with_rosters:
         update_photos(teams)
         update_wiki_photos()
+        update_photo_credits()
     # 中身が変わったときだけ更新時刻を進める（変化のない自動実行で記録が増えないように）
     old = load("index.json", {})
     index["updated"] = old.get("updated") if (old.get("comps") == index["comps"] and not changed) else \

@@ -61,7 +61,7 @@ function load(path) {
   }
   return cache[path];
 }
-let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} }, PHOTOS = {};
+let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} }, PHOTOS = {}, CREDIT = {};
 // 日本語名があれば使う（en は YouTube 検索用に英語名を残す）
 const team = id => {
   const t = TEAMS[id] || { n: '未定', s: '未定', logo: '' };
@@ -71,7 +71,7 @@ const team = id => {
 const pn = name => NAMES.players[name] || name || '';
 // 顔写真（無ければ背番号の丸）
 const avatar = (p, cls = 'av') => PHOTOS[p.n]
-  ? `<img class="${cls}" src="${esc(PHOTOS[p.n])}" alt="" loading="lazy" onerror="this.className='${cls} none';this.removeAttribute('src')">`
+  ? `<img class="${cls}" data-n="${esc(p.n)}" src="${esc(PHOTOS[p.n])}" alt="" loading="lazy" onerror="this.className='${cls} none';this.removeAttribute('src')">`
   : `<span class="${cls} none"></span>`;
 const country = en => (NAMES.countries || {})[en] || en || '';
 // フォーメーション図では長いカタカナ名を最後の部分（姓）だけにする
@@ -538,7 +538,33 @@ async function viewTeam(id, tab) {
 }
 
 function footer() {
-  return '<p class="foot">データ：ESPN ／ 時刻はすべて日本時間</p>';
+  return '<p class="foot">データ：ESPN ／ 写真：API-Football・Wikimedia Commons（<a href="#/credits">写真のクレジット</a>）<br>時刻はすべて日本時間</p>';
+}
+
+// 写真の撮影者・ライセンス（Wikimedia Commons の写真は表示が必要）
+const photoIsAF = name => (PHOTOS[name] || '').includes('api-sports.io');
+let toastTimer;
+document.addEventListener('click', e => {
+  const img = e.target.closest('img[data-n]');
+  if (!img) return;
+  const n = img.dataset.n, c = photoIsAF(n) ? null : CREDIT[n];
+  let t = document.getElementById('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.innerHTML = `${esc(pn(n))}<br>${c ? `写真：${esc(c.a)}／<a href="${esc(c.u || c.f)}" target="_blank" rel="noopener">${esc(c.l)}</a>（<a href="${esc(c.f)}" target="_blank" rel="noopener">Wikimedia Commons</a>）` : '写真：API-Football'}`;
+  t.className = 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ''; }, 5000);
+});
+
+function viewCredits() {
+  setNav(null);
+  const rows = Object.entries(CREDIT).filter(([n]) => !photoIsAF(n))
+    .sort((a, b) => pn(a[0]).localeCompare(pn(b[0]), 'ja'))
+    .map(([n, c]) => `<div class="p"><img class="av" src="${esc(PHOTOS[n])}" alt="" loading="lazy"><span class="grow">${esc(pn(n))}<br><span class="x">${esc(c.a)}／<a href="${esc(c.u || c.f)}" target="_blank" rel="noopener">${esc(c.l)}</a>・<a href="${esc(c.f)}" target="_blank" rel="noopener">元の写真</a></span></span></div>`);
+  app.innerHTML = `<button class="back" onclick="history.back()">‹ 戻る</button>
+    <h2>写真のクレジット</h2>
+    <p class="explain" style="padding:0">選手の顔写真の一部は Wikimedia Commons の写真を、各ライセンス（クリエイティブ・コモンズなど）に従って縮小して表示しています。写真をタップしても撮影者とライセンスを確認できます。その他の写真は API-Football の提供です。</p>
+    <div class="card plist">${rows.join('')}</div>${footer()}`;
 }
 
 // ===== ルーティング =====
@@ -549,6 +575,7 @@ async function route() {
     if (p[0] === 'c') await viewComp(p[1], p[2], p[3]);
     else if (p[0] === 'm') await viewMatch(p[1], p[2], p[3], p[4]);
     else if (p[0] === 't') await viewTeam(p[1], p[2]);
+    else if (p[0] === 'credits') viewCredits();
     else await viewHome();
   } catch (e) {
     console.error(e);
@@ -561,7 +588,10 @@ async function route() {
   let photos;
   [INDEX, TEAMS, names, photos] = await Promise.all([load('index.json'), load('teams.json'), load('names_ja.json'), load('photos.json')]);
   if (names) NAMES = names;
-  if (photos) PHOTOS = { ...(photos.wiki || {}), ...(photos.players || {}) }; // API-Football の写真を優先
+  if (photos) {
+    PHOTOS = { ...(photos.wiki || {}), ...(photos.players || {}) }; // API-Football の写真を優先
+    CREDIT = photos.credit || {};
+  }
   if (!INDEX) { app.innerHTML = '<p class="empty">データがまだありません</p>'; return; }
   TEAMS = TEAMS || {};
   if (INDEX.updated) {
