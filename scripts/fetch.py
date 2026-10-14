@@ -500,6 +500,9 @@ def update_photos(teams):
                 hit = by_sn[0] if len(by_sn) == 1 else None
             if hit and hit.get("photo"):
                 ph["players"][p["n"]] = hit["photo"]
+                # API-Football の写真が見つかったら Wikipedia の写真とクレジットは外す（API-Football を優先）
+                ph.get("wiki", {}).pop(p["n"], None)
+                ph.get("credit", {}).pop(p["n"], None)
         ph["teams"][tid]["checked"] = today
     ph["_quota"] = quota
     save("photos.json", ph)
