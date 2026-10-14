@@ -561,7 +561,7 @@ async function route() {
   let photos;
   [INDEX, TEAMS, names, photos] = await Promise.all([load('index.json'), load('teams.json'), load('names_ja.json'), load('photos.json')]);
   if (names) NAMES = names;
-  if (photos) PHOTOS = photos.players || {};
+  if (photos) PHOTOS = { ...(photos.wiki || {}), ...(photos.players || {}) }; // API-Football の写真を優先
   if (!INDEX) { app.innerHTML = '<p class="empty">データがまだありません</p>'; return; }
   TEAMS = TEAMS || {};
   if (INDEX.updated) {

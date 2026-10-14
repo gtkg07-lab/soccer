@@ -54,7 +54,7 @@ def get(url, retries=3):
             requests_made += 1
             time.sleep(0.15)
             return json.loads(body)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        except (OSError, ValueError) as e:
             if i == retries - 1:
                 print("  失敗:", url, e, file=sys.stderr)
                 return None
@@ -245,7 +245,7 @@ def wikidata_ja(names):
         try:
             with urllib.request.urlopen(req, timeout=90) as r:
                 rows = json.load(r)["results"]["bindings"]
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as e:
+        except (OSError, ValueError, KeyError) as e:
             print("  Wikidata 失敗:", e, file=sys.stderr)
             continue
         for b in rows:
@@ -407,7 +407,7 @@ def af_get(path, key):
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         print("  API-Football 失敗:", path, e, file=sys.stderr)
         return None
     if d.get("errors"):
@@ -506,6 +506,87 @@ def update_photos(teams):
     print("  顔写真:", len(ph["players"]), "人 / API-Football 本日", quota["used"], "回")
 
 
+def update_wiki_photos():
+    """API-Football で写真が見つからない選手を、Wikidata（Wikimedia Commons）の写真で補う。
+    同名の別人を避けるため、サッカー選手であることと生まれ年（年齢から計算）が合うことを確認する。"""
+    ph = load("photos.json", {"teams": {}, "players": {}})
+    wiki = ph.setdefault("wiki", {})
+    tried = set(ph.get("_wiki_tried", []))
+    ages = {}
+    for path in glob.glob(os.path.join(ROOT, "t", "*.json")):
+        for p in load(os.path.relpath(path, ROOT), {}).get("players", []):
+            if p.get("age"):
+                ages[p["n"]] = p["age"]
+    missing = sorted(n for n in ages if n not in ph["players"] and n not in wiki and n not in tried)
+    year = datetime.now(timezone.utc).year
+    found = 0
+    for i in range(0, len(missing), 150):
+        chunk = [n for n in missing[i:i + 150] if '"' not in n and "\\" not in n]
+        q = 'SELECT ?en ?p ?img ?born WHERE { VALUES ?en { %s } ?p rdfs:label ?en; wdt:P106 wd:Q937857; wdt:P18 ?img. ' \
+            'OPTIONAL { ?p wdt:P569 ?born } }' % " ".join('"%s"@en' % n for n in chunk)
+        req = urllib.request.Request(
+            "https://query.wikidata.org/sparql", data=urllib.parse.urlencode({"query": q}).encode(),
+            headers={"Accept": "application/sparql-results+json", "User-Agent": "soccer-app/1.0 (github.com/gtkg07-lab/soccer)"})
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                rows = json.load(r)["results"]["bindings"]
+        except (OSError, ValueError, KeyError) as e:
+            print("  Wikidata 写真 失敗:", e, file=sys.stderr)
+            continue
+        cands = {}
+        for b in rows:
+            born = b.get("born", {}).get("value", "")[:4]
+            cands.setdefault(b["en"]["value"], {})[b["p"]["value"]] = (born, b["img"]["value"])
+        for n in chunk:
+            # 年齢から考えられる生まれ年（誕生日前後で ±1）に合う人が1人だけなら採用
+            ok = [img for born, img in cands.get(n, {}).values()
+                  if born.isdigit() and abs((year - int(born)) - ages[n]) <= 1]
+            if len(ok) == 1:
+                wiki[n] = ok[0].replace("http://", "https://") + "?width=160"
+                found += 1
+            tried.add(n)
+        time.sleep(1)
+    ph["_wiki_tried"] = sorted(tried)
+
+    # 2段目：英語版 Wikipedia（表記ゆれはリダイレクトで吸収される）。50人ずつまとめて問い合わせ、説明文の生まれ年で本人確認
+    wp_tried = set(ph.get("_wp_tried", []))
+    todo = sorted(x for x in ages if x not in ph["players"] and x not in wiki and x not in wp_tried)
+    for i in range(0, len(todo), 50):
+        chunk = todo[i:i + 50]
+        params = {"action": "query", "format": "json", "redirects": 1, "prop": "pageimages|description",
+                  "piprop": "thumbnail", "pithumbsize": 200, "titles": "|".join(chunk)}
+        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(params)
+        d = None
+        for attempt in range(3):  # 混んでいると断られる（429）ので待って再挑戦
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "soccer-app/1.0 (github.com/gtkg07-lab/soccer)"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    d = json.load(r)["query"]
+                break
+            except (OSError, ValueError, KeyError) as e:
+                print("  Wikipedia 失敗:", e, file=sys.stderr)
+                time.sleep(30 * (attempt + 1))
+        if d is None:
+            continue  # 次回また試す
+        # 元の名前 → 正規化・リダイレクト後のページ名
+        alias = {x["from"]: x["to"] for x in d.get("normalized", [])}
+        redir = {x["from"]: x["to"] for x in d.get("redirects", [])}
+        pages = {pg.get("title"): pg for pg in d.get("pages", {}).values()}
+        for n in chunk:
+            t = alias.get(n, n)
+            pg = pages.get(redir.get(t, t), {})
+            born = re.search(r"footballer.*born (\d{4})", pg.get("description", ""))
+            thumb = (pg.get("thumbnail") or {}).get("source")
+            if born and thumb and abs((year - int(born.group(1))) - ages[n]) <= 1:
+                wiki[n] = thumb
+                found += 1
+            wp_tried.add(n)
+        time.sleep(3)
+    ph["_wp_tried"] = sorted(wp_tried)
+    save("photos.json", ph)
+    print("  Wikipedia の写真:", found, "人追加（合計", len(wiki), "人）")
+
+
 def main():
     with_rosters = "--rosters" in sys.argv
     teams = load("teams.json", {})
@@ -555,6 +636,7 @@ def main():
     update_highlights(teams)
     if with_rosters:
         update_photos(teams)
+        update_wiki_photos()
     # 中身が変わったときだけ更新時刻を進める（変化のない自動実行で記録が増えないように）
     old = load("index.json", {})
     index["updated"] = old.get("updated") if (old.get("comps") == index["comps"] and not changed) else \
