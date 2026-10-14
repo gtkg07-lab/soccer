@@ -4,18 +4,22 @@
   python3 scripts/fetch.py            # 試合一覧・順位表・終わった試合の詳細を更新
   python3 scripts/fetch.py --rosters  # 上に加えて各チームの所属選手も更新（毎日0時用）
 """
+import glob
 import gzip
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SITE = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 WEB = "https://site.web.api.espn.com/apis/v2/sports/soccer"
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+NAMES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "names")
 
 # first: 最初に表示するシーズン（ESPN の season.year。2025 = 25/26）
 COMPETITIONS = [
@@ -226,6 +230,143 @@ def fetch_roster(comp, team_id, teams):
             "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
 
+def wikidata_ja(names):
+    """英語名から Wikidata の日本語名を探す（サッカー選手に限定し、表示名と同じ長さのものだけ採用）。"""
+    found = {}
+    names = [n for n in names if n and '"' not in n and "\\" not in n]
+    for i in range(0, len(names), 200):
+        chunk = names[i:i + 200]
+        q = 'SELECT ?en ?ja WHERE { VALUES ?en { %s } ?p rdfs:label ?en; wdt:P106 wd:Q937857; ' \
+            'rdfs:label ?ja FILTER(lang(?ja)="ja") }' % " ".join('"%s"@en' % n for n in chunk)
+        req = urllib.request.Request(
+            "https://query.wikidata.org/sparql", data=urllib.parse.urlencode({"query": q}).encode(),
+            headers={"Accept": "application/sparql-results+json", "User-Agent": "soccer-app/1.0 (github.com/gtkg07-lab/soccer)"})
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                rows = json.load(r)["results"]["bindings"]
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as e:
+            print("  Wikidata 失敗:", e, file=sys.stderr)
+            continue
+        for b in rows:
+            en, ja = b["en"]["value"], re.sub(r"\s*[(（].*?[)）]\s*$", "", b["ja"]["value"]).strip()
+            if re.fullmatch(r"[ァ-ヴー・＝=\s]+", ja) and len(en.split()) == len(re.split("[・ ]", ja)):
+                found.setdefault(en, ja.replace("=", "＝"))
+        time.sleep(1)
+    return found
+
+
+def build_names(lookup_new):
+    """names/ の辞書をまとめて data/names_ja.json にする。lookup_new なら未訳の選手を Wikidata で探す。"""
+    def read(path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    teams = {k: v for k, v in read(os.path.join(NAMES, "teams_ja.json")).items() if not k.startswith("_")}
+    players = {}
+    for path in sorted(glob.glob(os.path.join(NAMES, "players_ja_*.json"))):
+        players.update(read(path))
+    if lookup_new:
+        seen = set()
+        for path in glob.glob(os.path.join(ROOT, "t", "*.json")):
+            seen.update(p["n"] for p in read(path)["players"])
+        for path in glob.glob(os.path.join(ROOT, "m", "*.json")):
+            for side in read(path).get("lineups", {}).values():
+                seen.update(p["n"] for p in side["players"])
+        missing = sorted(n for n in seen if n and n not in players)
+        if missing:
+            auto_path = os.path.join(NAMES, "players_ja_auto.json")
+            auto = read(auto_path) if os.path.exists(auto_path) else {}
+            auto.update(wikidata_ja(missing))
+            with open(auto_path, "w", encoding="utf-8") as f:
+                json.dump(auto, f, ensure_ascii=False, indent=0, sort_keys=True)
+            players.update(auto)
+            print("  未訳の選手:", len(missing), "人 → Wikidataで", len([n for n in missing if n in auto]), "人見つかった")
+    save("names_ja.json", {"teams": teams, "players": players,
+                           "countries": read(os.path.join(NAMES, "countries_ja.json"))})
+
+
+YT_DAILY_LIMIT = 95   # YouTube Data API の無料枠は1日10,000ユニット＝検索100回
+YT_PER_RUN = 8        # 15分ごとの1回の実行で使う検索回数の上限
+LONG_WORDS = re.compile(r"extended|long|ロング|full highlights|拡大", re.I)
+SKIP_WORDS = re.compile(r"full match|full game|フルマッチ|live|ライブ|preview|プレビュー|reaction|fifa|efootball|pes ", re.I)
+
+
+def norm(s):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", s or "").lower() if not unicodedata.combining(c))
+
+
+def team_words(team, ja):
+    """動画タイトルにそのチームが入っているか判定するための単語（英語名の4文字以上の語・日本語の短縮名）。"""
+    words = {w for w in re.split(r"[\s\-./&]+", norm(team.get("n", "")) + " " + norm(team.get("s", ""))) if len(w) >= 4}
+    words -= {"club", "united", "city", "real", "sporting", "athletic", "atletico"} if len(words) > 1 else set()
+    if ja:
+        words |= {norm(ja[0]), norm(ja[1])}
+    return words
+
+
+def update_highlights(teams):
+    """終わった試合のハイライト動画を YouTube で探して data/highlights.json に保存する。"""
+    key = os.environ.get("YT_API_KEY")
+    if not key:
+        return
+    hl = load("highlights.json", {})
+    # 無料枠は太平洋時間の0時にリセットされる
+    day = (datetime.now(timezone.utc) - timedelta(hours=8)).strftime("%Y-%m-%d")
+    quota = hl.get("_quota", {})
+    if quota.get("day") != day:
+        quota = {"day": day, "used": 0}
+    budget = min(YT_PER_RUN, YT_DAILY_LIMIT - quota["used"])
+    if budget <= 0:
+        return
+    names_ja = load("names_ja.json", {}).get("teams", {})
+    now = datetime.now(timezone.utc)
+    cands = []
+    for comp in COMPETITIONS:
+        for path in glob.glob(os.path.join(ROOT, comp["id"], "*", "matches.json")):
+            for m in load(os.path.relpath(path, ROOT), []):
+                if m["s"] != "post" or not m.get("h") or not m.get("a"):
+                    continue
+                ko = datetime.strptime(m["d"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+                if now - ko < timedelta(hours=3):
+                    continue
+                e = hl.get(m["id"], {})
+                if e.get("h") and e.get("l"):
+                    continue
+                tries = e.get("n", 0)
+                if tries >= 3 or (e.get("c") and now - datetime.fromisoformat(e["c"]) < timedelta(hours=6 * tries)):
+                    continue
+                cands.append((ko, m))
+    cands.sort(key=lambda x: x[0], reverse=True)  # 新しい試合から
+    for ko, m in cands[:budget]:
+        th, ta = teams.get(m["h"]["id"], {}), teams.get(m["a"]["id"], {})
+        params = {
+            "part": "snippet", "type": "video", "maxResults": 15, "regionCode": "JP", "key": key,
+            "q": "%s vs %s highlights" % (th.get("n", ""), ta.get("n", "")),
+            "publishedAfter": ko.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "publishedBefore": (ko + timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        d = get("https://www.googleapis.com/youtube/v3/search?" + urllib.parse.urlencode(params), retries=1)
+        quota["used"] += 1
+        if d is None:
+            break  # 枠切れなどのエラー。今回はここまで
+        wh, wa = team_words(th, names_ja.get(m["h"]["id"])), team_words(ta, names_ja.get(m["a"]["id"]))
+        e = dict(hl.get(m["id"], {}), c=now.isoformat(timespec="seconds"), n=hl.get(m["id"], {}).get("n", 0) + 1)
+        for it in d.get("items", []):
+            title = it["snippet"]["title"]
+            t = norm(title)
+            if SKIP_WORDS.search(title) or not (any(w in t for w in wh) and any(w in t for w in wa)):
+                continue
+            vid = {"id": it["id"]["videoId"], "t": title, "ch": it["snippet"]["channelTitle"]}
+            if LONG_WORDS.search(title):
+                e.setdefault("l", vid)
+            else:
+                e.setdefault("h", vid)
+        hl[m["id"]] = e
+    hl["_quota"] = quota
+    save("highlights.json", hl)
+    print("  YouTube 検索:", quota["used"], "/", YT_DAILY_LIMIT, "（本日分）")
+
+
 def main():
     with_rosters = "--rosters" in sys.argv
     teams = load("teams.json", {})
@@ -271,6 +412,8 @@ def main():
                                    seasons=seasons))
 
     save("teams.json", teams)
+    build_names(lookup_new=with_rosters)
+    update_highlights(teams)
     # 中身が変わったときだけ更新時刻を進める（変化のない自動実行で記録が増えないように）
     old = load("index.json", {})
     index["updated"] = old.get("updated") if (old.get("comps") == index["comps"] and not changed) else \

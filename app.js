@@ -61,8 +61,17 @@ function load(path) {
   }
   return cache[path];
 }
-let INDEX = null, TEAMS = {};
-const team = id => TEAMS[id] || { n: '未定', s: '未定', logo: '' };
+let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} };
+// 日本語名があれば使う（en は YouTube 検索用に英語名を残す）
+const team = id => {
+  const t = TEAMS[id] || { n: '未定', s: '未定', logo: '' };
+  const ja = NAMES.teams[id];
+  return ja ? { ...t, en: t.n, n: ja[0], s: ja[1] } : { ...t, en: t.n };
+};
+const pn = name => NAMES.players[name] || name || '';
+const country = en => (NAMES.countries || {})[en] || en || '';
+// フォーメーション図では長いカタカナ名を最後の部分（姓）だけにする
+const pnShort = name => { const j = pn(name); return j.includes('・') ? j.split('・').pop() : j; };
 const comp = id => INDEX.comps.find(c => c.id === id);
 function currentSeason(c) {
   const ss = c.seasons;
@@ -341,13 +350,18 @@ async function viewMatch(cid, y, id, tab) {
   const H = team(m.h.id), A = team(m.a.id);
   const ev = (d && d.events) || [];
   const scorers = side => ev.filter(e => ['goal', 'pen', 'og'].includes(e.t) && e.team === side)
-    .map(e => `${esc(e.p[0] || '')} ${esc(e.min)}${e.t === 'pen' ? '(PK)' : e.t === 'og' ? '(OG)' : ''}`).join('<br>');
+    .map(e => `${esc(pn(e.p[0]))} ${esc(e.min)}${e.t === 'pen' ? '(PK)' : e.t === 'og' ? '(OG)' : ''}`).join('<br>');
   const q = encodeURIComponent;
   const season = c.seasons.find(s => s.y === +y);
+  // 見つかった動画があれば直接、無ければ YouTube の検索結果を開く
+  const hl = ((await load('highlights.json')) || {})[id] || {};
+  const vlink = (v, query, label) => v
+    ? `<a href="https://www.youtube.com/watch?v=${esc(v.id)}" target="_blank" rel="noopener" title="${esc(v.t)}">${YT_ICON}${label}</a>`
+    : `<a class="search" href="https://www.youtube.com/results?search_query=${q(query)}" target="_blank" rel="noopener">${YT_ICON}${label}を検索</a>`;
   const vids = m.s === 'post' ? `<div class="videos">
-      <a href="https://www.youtube.com/results?search_query=${q(`${H.n} vs ${A.n} highlights ${season ? season.label : ''}`)}" target="_blank" rel="noopener">${YT_ICON}ハイライト</a>
-      <a href="https://www.youtube.com/results?search_query=${q(`${H.n} vs ${A.n} extended highlights`)}" target="_blank" rel="noopener">${YT_ICON}ロングハイライト</a>
-    </div><div class="note">YouTubeの検索結果が開きます</div>` : '';
+      ${vlink(hl.h, `${H.en} vs ${A.en} highlights ${season ? season.label : ''}`, 'ハイライト')}
+      ${vlink(hl.l, `${H.en} vs ${A.en} extended highlights`, 'ロングハイライト')}
+    </div>${hl.h || hl.l ? `<div class="note">${esc([hl.h, hl.l].filter(Boolean).map(v => v.ch).filter((v, i, a) => a.indexOf(v) === i).join('・'))} の動画</div>` : '<div class="note">動画が見つかるまでは YouTube の検索結果が開きます</div>'}` : '';
   const big = m.s === 'pre'
     ? `<div class="big" style="font-size:20px">${fmtTime(m.d)}<small>キックオフ</small></div>`
     : `<div class="big">${m.h.sc} - ${m.a.sc}<small style="${m.s === 'in' ? 'color:var(--live);font-weight:700' : ''}">${m.h.pen != null ? `PK戦 ${m.h.pen}-${m.a.pen}` : esc(statusText(m))}</small></div>`;
@@ -455,14 +469,14 @@ function lineupHtml(m, d) {
     const yPos = 92 - ri * (84 / Math.max(rows.length - 1, 1));
     row.forEach((p, pi) => {
       const x = (pi + 1) / (row.length + 1) * 100;
-      dots += `<div class="pl" style="left:${x}%;top:${yPos}%"><div class="num">${esc(p.num)}</div><div class="nm">${esc(p.n)}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></div>`;
+      dots += `<div class="pl" style="left:${x}%;top:${yPos}%"><div class="num">${esc(p.num)}</div><div class="nm">${esc(pnShort(p.n))}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></div>`;
     });
   });
   const bench = L.players.filter(p => !p.st);
   return `<div class="tabs" id="side"><button data-side="home" class="${side === 'home' ? 'on' : ''}">${esc(team(m.h.id).s)}</button><button data-side="away" class="${side === 'away' ? 'on' : ''}">${esc(team(m.a.id).s)}</button></div>
     <div class="formation">${logo(tid)}<b>${esc(L.form || '')}</b></div>
     <div class="pitch">${dots}</div>
-    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<div class="p"><span class="no">${esc(p.num)}</span><span class="grow">${esc(p.n)} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</div>`).join('')}</div>`;
+    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<div class="p"><span class="no">${esc(p.num)}</span><span class="grow">${esc(pn(p.n))} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</div>`).join('')}</div>`;
 }
 function bindLineupSwitch(m, d) {
   app.querySelectorAll('#side button').forEach(b => b.addEventListener('click', () => {
@@ -477,7 +491,7 @@ function timelineHtml(m, d) {
   if (!ev.length) return '<p class="empty">記録はありません</p>';
   const icon = { goal: '⚽', pen: '⚽ PK', og: '⚽ OG', yc: '<i class="yc"></i>', rc: '<i class="rc"></i>', rc2: '<i class="yc"></i><i class="rc"></i>', sub: '🔄' };
   // 交代は participants の1人目が入った選手、2人目が出た選手
-  const txt = e => e.t === 'sub' ? `${icon.sub} ↑${esc(e.p[0] || '')}${e.p[1] ? ` <span class="x">↓${esc(e.p[1])}</span>` : ''}` : `${icon[e.t]} ${esc(e.p[0] || '')}`;
+  const txt = e => e.t === 'sub' ? `${icon.sub} ↑${esc(pn(e.p[0]))}${e.p[1] ? ` <span class="x">↓${esc(pn(e.p[1]))}</span>` : ''}` : `${icon[e.t]} ${esc(pn(e.p[0]))}`;
   return `<div class="card tl">${ev.map(e => {
     const home = e.team === m.h.id;
     return `<div class="e"><div class="l">${home ? txt(e) : ''}</div><div class="m">${esc(e.min)}</div><div>${home ? '' : txt(e)}</div></div>`;
@@ -502,7 +516,7 @@ async function viewTeam(id, tab) {
     if (!roster) body = '<p class="empty">選手一覧はまだありません</p>';
     else body = Object.entries(POS_GROUP).map(([k, label]) => {
       const ps = roster.players.filter(p => (p.pos || '').startsWith(k)).sort((a, b) => (+a.num || 99) - (+b.num || 99));
-      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<div class="p"><span class="no">${esc(p.num || '')}</span><span class="grow">${esc(p.n)}</span><span class="x">${esc(p.nat || '')}${p.age ? ` · ${p.age}歳` : ''}</span></div>`).join('')}</div>` : '';
+      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<div class="p"><span class="no">${esc(p.num || '')}</span><span class="grow">${esc(pn(p.n))}</span><span class="x">${esc(country(p.nat))}${p.age ? ` · ${p.age}歳` : ''}</span></div>`).join('')}</div>` : '';
     }).join('');
   } else {
     const next = all.filter(x => x.m.s !== 'post');
@@ -514,7 +528,7 @@ async function viewTeam(id, tab) {
   }
   app.innerHTML = `
     <button class="back" onclick="history.back()">‹ 戻る</button>
-    <div class="pagehead">${logo(id, 'xl')}<div><h1>${esc(t.n)}</h1><div class="sub">${roster ? `${roster.players.length}人` : ''}</div></div></div>
+    <div class="pagehead">${logo(id, 'xl')}<div><h1>${esc(t.n)}</h1><div class="sub">${esc(t.en)}${roster ? ` · ${roster.players.length}人` : ''}</div></div></div>
     ${tabs([['players', '選手'], ['games', '試合']], tab)}<div id="body">${body}</div>${footer()}`;
   bindTabs(app, k => { history.replaceState(null, '', `#/t/${id}/${k}`); viewTeam(id, k); });
 }
@@ -539,7 +553,9 @@ async function route() {
 }
 
 (async function init() {
-  [INDEX, TEAMS] = await Promise.all([load('index.json'), load('teams.json')]);
+  let names;
+  [INDEX, TEAMS, names] = await Promise.all([load('index.json'), load('teams.json'), load('names_ja.json')]);
+  if (names) NAMES = names;
   if (!INDEX) { app.innerHTML = '<p class="empty">データがまだありません</p>'; return; }
   TEAMS = TEAMS || {};
   if (INDEX.updated) {
