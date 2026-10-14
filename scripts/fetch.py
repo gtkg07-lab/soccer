@@ -6,6 +6,7 @@
 """
 import glob
 import gzip
+import html
 import json
 import os
 import re
@@ -286,8 +287,14 @@ def build_names(lookup_new):
 
 YT_DAILY_LIMIT = 95   # YouTube Data API の無料枠は1日10,000ユニット＝検索100回
 YT_PER_RUN = 8        # 15分ごとの1回の実行で使う検索回数の上限
-LONG_WORDS = re.compile(r"extended|long|ロング|full highlights|拡大", re.I)
-SKIP_WORDS = re.compile(r"full match|full game|フルマッチ|live|ライブ|preview|プレビュー|reaction|fifa|efootball|pes ", re.I)
+LONG_WORDS = re.compile(r"extended|long|ロング|拡大", re.I)
+HL_WORDS = re.compile(r"highlight|ハイライト|resumen|résumé|resume|summary|extended|sintesi|samenvatting|melhores momentos", re.I)
+SKIP_WORDS = re.compile(r"full match|full game|フルマッチ|live|ライブ|en directo|preview|プレビュー|reaction|fifa|efootball|pes |#shorts", re.I)
+# 公式とみなすチャンネル（リーグ・大会・放送局）。これ以外はクラブ公式（チャンネル名にチーム名を含む）のみ採用
+OFFICIAL_CHANNELS = ("premier league", "laliga", "ligue 1", "uefa", "champions league", "wowow", "dazn", "u-next", "unext",
+                     "sky sports", "tnt sports", "cbs sports", "bein", "canal+", "nbc sports", "espn", "movistar",
+                     "prime video", "abema", "sport tv", "rtve", "tf1", "bbc sport", "itv")
+FAN_WORDS = re.compile(r"fan|news|talk|daily|all about|nation|tv\b|zone|world|hub|insider|addict", re.I)
 
 
 def norm(s):
@@ -298,10 +305,19 @@ def norm(s):
 def team_words(team, ja):
     """動画タイトルにそのチームが入っているか判定するための単語（英語名の4文字以上の語・日本語の短縮名）。"""
     words = {w for w in re.split(r"[\s\-./&]+", norm(team.get("n", "")) + " " + norm(team.get("s", ""))) if len(w) >= 4}
-    words -= {"club", "united", "city", "real", "sporting", "athletic", "atletico"} if len(words) > 1 else set()
+    words -= {"club", "united", "city", "real", "sporting", "athletic", "atletico", "saint", "paris"} if len(words) > 1 else set()
+    if len(team.get("ab", "")) >= 3:
+        words.add(norm(team["ab"]))
     if ja:
         words |= {norm(ja[0]), norm(ja[1])}
     return words
+
+
+def is_club_channel(ch, team, ja):
+    """チャンネル名がチーム名で始まり、ファン運営らしい言葉を含まなければクラブ公式とみなす。"""
+    heads = [norm(team.get("n", "")), norm(team.get("s", "")), norm(team.get("ab", ""))] + [norm(x) for x in (ja or [])]
+    ch = re.sub(r"^(fc|afc|cf|as|rc|ss|sl|sc|ac|ud|cd|sv|vfb|ogc|1\.)\s+", "", ch)
+    return any(len(x) >= 3 and ch.startswith(x) for x in heads) and not FAN_WORDS.search(ch)
 
 
 def update_highlights(teams):
@@ -339,9 +355,15 @@ def update_highlights(teams):
     cands.sort(key=lambda x: x[0], reverse=True)  # 新しい試合から
     for ko, m in cands[:budget]:
         th, ta = teams.get(m["h"]["id"], {}), teams.get(m["a"]["id"], {})
+        jh, ja_ = names_ja.get(m["h"]["id"]), names_ja.get(m["a"]["id"])
+        # 1回目は英語、2回目は日本語（WOWOW・DAZN・U-NEXT など日本の放送局向け）で探す
+        if hl.get(m["id"], {}).get("n", 0) % 2 == 1 and jh and ja_:
+            query = "%s vs %s ハイライト" % (jh[0], ja_[0])
+        else:
+            query = "%s vs %s highlights" % (th.get("n", ""), ta.get("n", ""))
         params = {
             "part": "snippet", "type": "video", "maxResults": 15, "regionCode": "JP", "key": key,
-            "q": "%s vs %s highlights" % (th.get("n", ""), ta.get("n", "")),
+            "q": query,
             "publishedAfter": ko.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "publishedBefore": (ko + timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
@@ -349,18 +371,26 @@ def update_highlights(teams):
         quota["used"] += 1
         if d is None:
             break  # 枠切れなどのエラー。今回はここまで
-        wh, wa = team_words(th, names_ja.get(m["h"]["id"])), team_words(ta, names_ja.get(m["a"]["id"]))
+        wh, wa = team_words(th, jh), team_words(ta, ja_)
         e = dict(hl.get(m["id"], {}), c=now.isoformat(timespec="seconds"), n=hl.get(m["id"], {}).get("n", 0) + 1)
+        picks = {}
         for it in d.get("items", []):
-            title = it["snippet"]["title"]
-            t = norm(title)
-            if SKIP_WORDS.search(title) or not (any(w in t for w in wh) and any(w in t for w in wa)):
+            title, ch = html.unescape(it["snippet"]["title"]), html.unescape(it["snippet"]["channelTitle"])
+            t, c = norm(title), norm(ch)
+            if SKIP_WORDS.search(title) or not HL_WORDS.search(title):
                 continue
-            vid = {"id": it["id"]["videoId"], "t": title, "ch": it["snippet"]["channelTitle"]}
-            if LONG_WORDS.search(title):
-                e.setdefault("l", vid)
-            else:
-                e.setdefault("h", vid)
+            if not (any(w in t for w in wh) and any(w in t for w in wa)):
+                continue
+            # 放送局・リーグの公式を優先（0）、次にクラブ公式（1）。それ以外は採用しない
+            rank = 0 if any(o in c for o in OFFICIAL_CHANNELS) else \
+                1 if is_club_channel(c, th, jh) or is_club_channel(c, ta, ja_) else None
+            if rank is None:
+                continue
+            kind = "l" if LONG_WORDS.search(title) else "h"
+            if kind not in picks or rank < picks[kind][0]:
+                picks[kind] = (rank, {"id": it["id"]["videoId"], "t": title, "ch": ch})
+        for kind, (_, vid) in picks.items():
+            e.setdefault(kind, vid)
         hl[m["id"]] = e
     hl["_quota"] = quota
     save("highlights.json", hl)
