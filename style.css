@@ -208,10 +208,29 @@ table.st td.pts { font-weight: 700; }
 .pl .face b { position: absolute; right: -6px; bottom: -2px; background: #111; color: #fff; font-size: 9px; border-radius: 8px; padding: 0 4px; line-height: 14px; }
 
 /* 写真のクレジット表示 */
-img[data-n] { cursor: pointer; }
 #toast { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto;
   background: rgba(17,24,39,.95); color: #fff; font-size: 12px; line-height: 1.5; padding: 10px 14px; border-radius: 10px;
   opacity: 0; transform: translateY(10px); transition: .2s; pointer-events: none; z-index: 50; }
 #toast.show { opacity: 1; transform: none; pointer-events: auto; }
 #toast a { color: #93c5fd; text-decoration: underline; }
 .foot a, .plist a { text-decoration: underline; }
+
+/* 選手ページ */
+a.p { color: inherit; }
+a.pl { color: inherit; }
+.phead { display: flex; gap: 14px; padding: 14px; align-items: flex-start; margin-top: 4px; }
+.phead h1 { font-size: 20px; margin: 0; }
+.phead .sub { color: var(--sub); font-size: 13px; }
+.av.xl { width: 88px; height: 88px; }
+.pinfo { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 2px; font-size: 14px; font-weight: 600; }
+.pinfo a { display: inline-flex; align-items: center; gap: 4px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; text-align: center; }
+.tile b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.tile span { font-size: 11px; color: var(--sub); }
+.plist .yr { width: 78px; flex: none; font-variant-numeric: tabular-nums; }
+table.st tr.total td { font-weight: 700; background: var(--bg); }
+details { margin-top: 10px; }
+summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
+.scorers a { text-decoration: none; }
+.plist .grow { text-align: left; }

@@ -223,9 +223,9 @@ def fetch_roster(comp, team_id, teams):
     players = []
     for a in d["athletes"]:
         players.append({
-            "n": a.get("displayName"), "num": a.get("jersey"),
+            "id": a.get("id"), "n": a.get("displayName"), "num": a.get("jersey"),
             "pos": (a.get("position") or {}).get("abbreviation", ""),
-            "age": a.get("age"), "nat": a.get("citizenship", ""),
+            "age": a.get("age"), "nat": a.get("citizenship", ""), "dob": (a.get("dateOfBirth") or "")[:10],
         })
     return {"id": team_id, "comp": comp["id"], "players": players,
             "updated": datetime.now(timezone.utc).isoformat(timespec="seconds")}
@@ -654,6 +654,215 @@ def update_photo_credits():
     print("  写真のクレジット:", len(credit), "件")
 
 
+UA = {"User-Agent": "soccer-app/1.0 (github.com/gtkg07-lab/soccer)"}
+YOUTH = re.compile(r"under-\d+|U-?\d\d\b|youth|juvenil|primavera|academy|reserves?\b| B$| II$|atl[eè]tic$|castilla|jong |amateur", re.I)
+
+
+def sparql(q):
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request("https://query.wikidata.org/sparql", data=urllib.parse.urlencode({"query": q}).encode(),
+                                         headers=dict(UA, Accept="application/sparql-results+json"))
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.load(r)["results"]["bindings"]
+        except (OSError, ValueError, KeyError) as e:
+            print("  Wikidata 失敗:", e, file=sys.stderr)
+            time.sleep(20 * (attempt + 1))
+    return None
+
+
+def all_roster_players():
+    """各チームの選手一覧から {ESPNの選手ID: 選手情報} を作る。所属はクラブを優先し、代表は natTeam に入れる。"""
+    national = {m[k]["id"] for p in glob.glob(os.path.join(ROOT, "unl", "*", "matches.json"))
+                for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+    ps = {}
+    for path in sorted(glob.glob(os.path.join(ROOT, "t", "*.json"))):
+        tid = os.path.basename(path)[:-5]
+        for p in load(os.path.relpath(path, ROOT), {}).get("players", []):
+            if not p.get("id"):
+                continue
+            e = ps.setdefault(p["id"], {})
+            if tid in national:
+                e["natTeam"] = tid
+                if "team" not in e:
+                    e.update(p, team=tid)
+            elif e.get("team") is None or e.get("team") in national:
+                e.update(p, team=tid)
+    return ps
+
+
+def resolve_wikidata(ps, wd):
+    """ESPNの選手を Wikidata の項目に対応づける。①ESPN ID ②名前＋生年月日 ③英語版Wikipediaのページ＋生年月日。"""
+    todo = [i for i in ps if i not in wd]
+    for i in range(0, len(todo), 400):
+        rows = sparql('SELECT ?id ?p WHERE { VALUES ?id { %s } ?p wdt:P3681 ?id }' % " ".join('"%s"' % x for x in todo[i:i + 400]))
+        for b in rows or []:
+            wd[b["id"]["value"]] = b["p"]["value"].rsplit("/", 1)[1]
+        time.sleep(1)
+    todo = [i for i in ps if i not in wd and ps[i].get("dob")]
+    for i in range(0, len(todo), 150):
+        chunk = [x for x in todo[i:i + 150] if '"' not in ps[x]["n"]]
+        rows = sparql('SELECT ?en ?p ?born WHERE { VALUES ?en { %s } ?p rdfs:label ?en; wdt:P106 wd:Q937857; wdt:P569 ?born }'
+                      % " ".join('"%s"@en' % ps[x]["n"] for x in chunk))
+        hits = {}
+        for b in rows or []:
+            hits.setdefault((b["en"]["value"], b["born"]["value"][:10]), set()).add(b["p"]["value"].rsplit("/", 1)[1])
+        for x in chunk:
+            q = hits.get((ps[x]["n"], ps[x]["dob"]))
+            if q and len(q) == 1:
+                wd[x] = q.pop()
+        time.sleep(1)
+    # ③ 表記ゆれ（アクセント記号など）は Wikipedia のリダイレクトで吸収する
+    todo = [i for i in ps if i not in wd and ps[i].get("dob")]
+    for i in range(0, len(todo), 50):
+        chunk = todo[i:i + 50]
+        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+            {"action": "query", "format": "json", "redirects": 1, "prop": "pageprops", "ppprop": "wikibase_item",
+             "titles": "|".join(ps[x]["n"] for x in chunk)})
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
+                d = json.load(r)["query"]
+        except (OSError, ValueError, KeyError) as e:
+            print("  Wikipedia 失敗:", e, file=sys.stderr)
+            time.sleep(30)
+            continue
+        alias = {x["from"]: x["to"] for x in d.get("normalized", [])}
+        redir = {x["from"]: x["to"] for x in d.get("redirects", [])}
+        pages = {pg.get("title"): pg for pg in d.get("pages", {}).values()}
+        cand = {}
+        for x in chunk:
+            t = alias.get(ps[x]["n"], ps[x]["n"])
+            q = pages.get(redir.get(t, t), {}).get("pageprops", {}).get("wikibase_item")
+            if q:
+                cand[x] = q
+        if cand:
+            rows = sparql('SELECT ?p ?born WHERE { VALUES ?p { %s } ?p wdt:P569 ?born }' % " ".join("wd:" + q for q in set(cand.values())))
+            born = {b["p"]["value"].rsplit("/", 1)[1]: b["born"]["value"][:10] for b in rows or []}
+            for x, q in cand.items():
+                if born.get(q) == ps[x]["dob"]:
+                    wd[x] = q
+        time.sleep(3)
+    return wd
+
+
+def to_int(v):
+    """Wikidata の数値（「不明」を表す特殊な値のこともある）を整数にする。数値でなければ None。"""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def wikidata_careers(qids):
+    """所属チームの履歴（期間・出場数・ゴール数）を Wikidata からまとめて取る。チーム名は日本語があれば日本語。"""
+    out = {}
+    qids = sorted(set(qids))
+    for i in range(0, len(qids), 60):
+        rows = sparql('''SELECT ?p ?team ?ja ?en ?start ?end ?apps ?goals ?nat WHERE {
+  VALUES ?p { %s }
+  ?p p:P54 ?st. ?st ps:P54 ?team; wikibase:rank ?rank. FILTER(?rank != wikibase:DeprecatedRank)
+  OPTIONAL { ?st pq:P580 ?start } OPTIONAL { ?st pq:P582 ?end }
+  OPTIONAL { ?st pq:P1350 ?apps } OPTIONAL { ?st pq:P1351 ?goals }
+  OPTIONAL { ?team rdfs:label ?ja FILTER(lang(?ja) = "ja") }
+  OPTIONAL { ?team rdfs:label ?en FILTER(lang(?en) = "en") }
+  OPTIONAL { ?team wdt:P31 ?nat FILTER(?nat IN (wd:Q6979593, wd:Q1194951, wd:Q20922793)) }
+}''' % " ".join("wd:" + q for q in qids[i:i + 60]))
+        if rows is None:
+            continue
+        seen = set()
+        for b in rows:
+            g = lambda k: b.get(k, {}).get("value", "")
+            q = g("p").rsplit("/", 1)[1]
+            key = (q, g("team"), g("start"), g("end"))
+            if key in seen:
+                continue
+            seen.add(key)
+            en = g("en")
+            kind = "nat" if (g("nat") or re.search(r"national", en, re.I)) else "youth" if YOUTH.search(en) else "club"
+            if kind == "nat" and YOUTH.search(en):
+                kind = "natY"
+            out.setdefault(q, []).append({
+                "c": g("ja") or en, "en": en, "k": kind, "from": g("start")[:4], "to": g("end")[:4],
+                "apps": to_int(g("apps")), "goals": to_int(g("goals"))})
+        time.sleep(2)
+    for q in out:
+        out[q].sort(key=lambda c: (c["from"] or "9999", c["to"] or "9999"))
+    return out
+
+
+ESPN_KEYS = {"starts": "starts", "STRT": "starts", "totalGoals": "totalGoals", "G": "totalGoals",
+             "goalAssists": "goalAssists", "A": "goalAssists"}
+
+
+def espn_rows(names, values):
+    """ESPN の成績の行から先発・ゴール・アシストだけを取り出す（項目名が略称のこともある）。"""
+    row = {}
+    for k, v in zip(names, values):
+        if k in ESPN_KEYS:
+            row[ESPN_KEYS[k]] = to_int(v) or 0
+    return row
+
+
+def espn_player_stats(pid):
+    """ESPN の選手データ：今季の全大会の成績と、所属リーグのシーズン別成績。"""
+    base = "https://site.web.api.espn.com/apis/common/v3/sports/soccer/athletes/%s" % pid
+    res = {}
+    ov = get(base + "/overview")
+    if ov and ov.get("statistics"):
+        names = ov["statistics"].get("names", [])
+        res["now"] = [dict(espn_rows(names, s.get("stats", [])), comp=s.get("displayName", ""))
+                      for s in ov["statistics"].get("splits", [])]
+    st = get(base + "/stats")
+    if st and st.get("categories"):
+        cat = st["categories"][0]
+        names = cat.get("names", [])
+        lg = next((o["displayValue"] for f in st.get("filters", []) if f["name"] == "league"
+                   for o in f.get("options", []) if o["value"] == f.get("value")), "")
+        res["league"] = {"name": lg, "seasons": [
+            dict(espn_rows(names, s.get("stats", [])), season=s.get("season", {}).get("displayName", ""))
+            for s in cat.get("statistics", [])]}
+    return res
+
+
+def update_players(full=False):
+    """選手の詳細ページ用データ data/p/{ESPNの選手ID}.json を作る。
+    Wikidata（所属履歴）は毎回全員分。ESPN（成績）は最近試合に出た選手と、更新が古い順に一定数。"""
+    ps = all_roster_players()
+    wd = load("players_wd.json", {})
+    resolve_wikidata(ps, wd)
+    save("players_wd.json", wd)
+    careers = wikidata_careers([q for q in wd.values() if q])
+    # 最近（2日以内）の試合に出た選手は成績が変わっているので優先
+    recent = set()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%MZ")
+    by_name = {p["n"]: i for i, p in ps.items()}
+    for path in glob.glob(os.path.join(ROOT, "*", "*", "matches.json")):
+        for m in load(os.path.relpath(path, ROOT), []):
+            if m["s"] == "post" and m["d"] >= cutoff:
+                for side in load("m/%s.json" % m["id"], {}).get("lineups", {}).values():
+                    recent.update(by_name[p["n"]] for p in side["players"] if p["n"] in by_name and (p["st"] or p.get("in")))
+    olds = sorted(ps, key=lambda i: load("p/%s.json" % i, {}).get("espnAt", ""))
+    espn_todo = list(dict.fromkeys(list(recent) + olds))[: (len(ps) if full else len(recent) + 700)]
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    index = {}
+    for pid, p in ps.items():
+        old = load("p/%s.json" % pid, {})
+        q = wd.get(pid)
+        rec = {k: p.get(k) for k in ("id", "n", "num", "pos", "age", "nat", "dob", "team", "natTeam")}
+        rec.update(wd=q, career=careers.get(q, old.get("career", [])) if q else [],
+                   espn=old.get("espn"), espnAt=old.get("espnAt", ""))
+        if pid in espn_todo:
+            if len(index) % 500 == 0:
+                print("    …", len(index), "人目", flush=True)
+            s = espn_player_stats(pid)
+            if s:
+                rec["espn"], rec["espnAt"] = s, now
+        save("p/%s.json" % pid, rec)
+        index[p["n"]] = pid
+    save("players_index.json", index)
+    print("  選手詳細:", len(ps), "人（Wikidata対応", sum(1 for i in ps if wd.get(i)), "人、ESPN更新", len(espn_todo), "人）")
+
+
 def main():
     with_rosters = "--rosters" in sys.argv
     teams = load("teams.json", {})
@@ -705,6 +914,7 @@ def main():
         update_photos(teams)
         update_wiki_photos()
         update_photo_credits()
+        update_players(full="--full-players" in sys.argv)
     # 中身が変わったときだけ更新時刻を進める（変化のない自動実行で記録が増えないように）
     old = load("index.json", {})
     index["updated"] = old.get("updated") if (old.get("comps") == index["comps"] and not changed) else \

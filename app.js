@@ -354,7 +354,7 @@ async function viewMatch(cid, y, id, tab) {
   const H = team(m.h.id), A = team(m.a.id);
   const ev = (d && d.events) || [];
   const scorers = side => ev.filter(e => ['goal', 'pen', 'og'].includes(e.t) && e.team === side)
-    .map(e => `${esc(pn(e.p[0]))} ${esc(e.min)}${e.t === 'pen' ? '(PK)' : e.t === 'og' ? '(OG)' : ''}`).join('<br>');
+    .map(e => `<a href="#/pn/${encodeURIComponent(e.p[0] || '')}">${esc(pn(e.p[0]))}</a> ${esc(e.min)}${e.t === 'pen' ? '(PK)' : e.t === 'og' ? '(OG)' : ''}`).join('<br>');
   const q = encodeURIComponent;
   const season = c.seasons.find(s => s.y === +y);
   // 見つかった動画があれば直接、無ければ YouTube の検索結果を開く
@@ -473,14 +473,14 @@ function lineupHtml(m, d) {
     const yPos = 92 - ri * (84 / Math.max(rows.length - 1, 1));
     row.forEach((p, pi) => {
       const x = (pi + 1) / (row.length + 1) * 100;
-      dots += `<div class="pl" style="left:${x}%;top:${yPos}%">${PHOTOS[p.n] ? `<div class="face">${avatar(p, "pf")}<b>${esc(p.num)}</b></div>` : `<div class="num">${esc(p.num)}</div>`}<div class="nm">${esc(pnShort(p.n))}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></div>`;
+      dots += `<a class="pl" href="#/pn/${encodeURIComponent(p.n)}" style="left:${x}%;top:${yPos}%">${PHOTOS[p.n] ? `<div class="face">${avatar(p, "pf")}<b>${esc(p.num)}</b></div>` : `<div class="num">${esc(p.num)}</div>`}<div class="nm">${esc(pnShort(p.n))}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></a>`;
     });
   });
   const bench = L.players.filter(p => !p.st);
   return `<div class="tabs" id="side"><button data-side="home" class="${side === 'home' ? 'on' : ''}">${esc(team(m.h.id).s)}</button><button data-side="away" class="${side === 'away' ? 'on' : ''}">${esc(team(m.a.id).s)}</button></div>
     <div class="formation">${logo(tid)}<b>${esc(L.form || '')}</b></div>
     <div class="pitch">${dots}</div>
-    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<div class="p"><span class="no">${esc(p.num)}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</div>`).join('')}</div>`;
+    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<a class="p" href="#/pn/${encodeURIComponent(p.n)}"><span class="no">${esc(p.num)}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</a>`).join('')}</div>`;
 }
 function bindLineupSwitch(m, d) {
   app.querySelectorAll('#side button').forEach(b => b.addEventListener('click', () => {
@@ -520,7 +520,7 @@ async function viewTeam(id, tab) {
     if (!roster) body = '<p class="empty">選手一覧はまだありません</p>';
     else body = Object.entries(POS_GROUP).map(([k, label]) => {
       const ps = roster.players.filter(p => (p.pos || '').startsWith(k)).sort((a, b) => (+a.num || 99) - (+b.num || 99));
-      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<div class="p"><span class="no">${esc(p.num || '')}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))}</span><span class="x">${esc(country(p.nat))}${p.age ? ` · ${p.age}歳` : ''}</span></div>`).join('')}</div>` : '';
+      return ps.length ? `<h3>${label}</h3><div class="card plist">${ps.map(p => `<a class="p" href="${p.id ? `#/p/${p.id}` : `#/pn/${encodeURIComponent(p.n)}`}"><span class="no">${esc(p.num || '')}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))}</span><span class="x">${esc(country(p.nat))}${p.age ? ` · ${p.age}歳` : ''}</span></a>`).join('')}</div>` : '';
     }).join('');
   } else {
     const next = all.filter(x => x.m.s !== 'post');
@@ -543,18 +543,85 @@ function footer() {
 
 // 写真の撮影者・ライセンス（Wikimedia Commons の写真は表示が必要）
 const photoIsAF = name => (PHOTOS[name] || '').includes('api-sports.io');
-let toastTimer;
-document.addEventListener('click', e => {
-  const img = e.target.closest('img[data-n]');
-  if (!img) return;
-  const n = img.dataset.n, c = photoIsAF(n) ? null : CREDIT[n];
-  let t = document.getElementById('toast');
-  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
-  t.innerHTML = `${esc(pn(n))}<br>${c ? `写真：${esc(c.a)}／<a href="${esc(c.u || c.f)}" target="_blank" rel="noopener">${esc(c.l)}</a>（<a href="${esc(c.f)}" target="_blank" rel="noopener">Wikimedia Commons</a>）` : '写真：API-Football'}`;
-  t.className = 'show';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = ''; }, 5000);
-});
+// ===== 選手 =====
+const POS_JA = { G: 'ゴールキーパー', D: 'ディフェンダー', M: 'ミッドフィルダー', F: 'フォワード' };
+const COMP_JA = [
+  [/Champions League/i, 'チャンピオンズリーグ'], [/Europa League/i, 'ヨーロッパリーグ'], [/Conference League/i, 'カンファレンスリーグ'],
+  [/UEFA Super Cup/i, 'UEFAスーパーカップ'], [/Nations League/i, 'ネーションズリーグ'], [/World Cup Qualifying/i, 'W杯予選'],
+  [/World Cup/i, 'W杯'], [/European Championship Qualifying|Euro Qualifying/i, 'EURO予選'], [/European Championship|EURO/i, 'EURO'],
+  [/International Friendly/i, '国際親善試合'], [/Friendly/i, '親善試合'],
+  [/English Premier League|^Premier League/i, 'プレミアリーグ'], [/Carabao|League Cup/i, 'カラバオ杯'], [/FA Cup/i, 'FAカップ'],
+  [/Community Shield/i, 'コミュニティ・シールド'], [/LALIGA|La Liga|Spanish/i, 'ラ・リーガ'], [/Copa del Rey/i, 'コパ・デル・レイ'],
+  [/Supercopa/i, 'スーペルコパ'], [/Ligue 1/i, 'リーグ・アン'], [/Coupe de France/i, 'クープ・ドゥ・フランス'],
+  [/Trophée des Champions/i, 'トロフェ・デ・シャンピオン'], [/Serie A/i, 'セリエA'], [/Bundesliga/i, 'ブンデスリーガ'], [/Copa Am[eé]rica/i, 'コパ・アメリカ'],
+];
+function compJa(name) {
+  const n = (name || '').replace(/^\d{4}(-\d{2})?\s+/, '');
+  for (const [re, ja] of COMP_JA) if (re.test(n)) return ja || n;
+  return n;
+}
+async function viewPlayerByName(name) {
+  const idx = (await load('players_index.json')) || {};
+  if (idx[name]) { history.replaceState(null, '', `#/p/${idx[name]}`); return viewPlayer(idx[name]); }
+  setNav(null);
+  app.innerHTML = `<button class="back" onclick="history.back()">‹ 戻る</button>
+    <div class="card phead">${avatar({ n: name }, 'av xl')}<div><h1>${esc(pn(name))}</h1><div class="sub">${esc(name)}</div></div></div>
+    <p class="empty">この選手は現在の所属チームの選手一覧に無いため、詳しいデータはありません</p>${footer()}`;
+}
+async function viewPlayer(id) {
+  setNav(null);
+  const p = await load(`p/${id}.json`);
+  if (!p) { app.innerHTML = '<p class="empty">選手が見つかりません</p>'; return; }
+  const t = team(p.team), nt = p.natTeam ? team(p.natTeam) : null;
+  const c = !photoIsAF(p.n) ? CREDIT[p.n] : null;
+  const credit = PHOTOS[p.n] ? `<div class="note">${c ? `写真：${esc(c.a)}／<a href="${esc(c.u || c.f)}" target="_blank" rel="noopener">${esc(c.l)}</a>（<a href="${esc(c.f)}" target="_blank" rel="noopener">Wikimedia Commons</a>）` : '写真：API-Football'}</div>` : '';
+  const dob = p.dob ? `${p.dob.replace(/^(\d+)-0?(\d+)-0?(\d+)$/, '$1年$2月$3日')}生まれ` : '';
+  const head = `<div class="card phead">${avatar(p, 'av xl')}<div>
+      <h1>${esc(pn(p.n))}</h1><div class="sub">${esc(p.n)}</div>
+      <div class="pinfo"><a href="#/t/${p.team}">${logo(p.team)}${esc(t.n)}</a>${nt && p.natTeam !== p.team ? `<a href="#/t/${p.natTeam}">${logo(p.natTeam)}${esc(nt.n)}代表</a>` : ''}</div>
+      <div class="sub">${esc(country(p.nat))}${p.pos ? ` · ${POS_JA[p.pos[0]] || p.pos}` : ''}${p.num ? ` · 背番号${esc(p.num)}` : ''}${p.age ? ` · ${p.age}歳` : ''}</div>
+      ${dob ? `<div class="sub">${dob}</div>` : ''}${credit}</div></div>`;
+
+  // 今季（ESPN・全大会）
+  const now = ((p.espn || {}).now || []).filter(r => !/Club Friendly/i.test(r.comp));
+  const sum = k => now.filter(r => !/Friendly/i.test(r.comp)).reduce((a, r) => a + (r[k] || 0), 0);
+  const nowHtml = now.length ? `<div class="card"><table class="st"><thead><tr><th style="text-align:left">大会</th><th>先発</th><th>ゴール</th><th>アシスト</th></tr></thead><tbody>
+      ${now.map(r => `<tr><td class="tm">${esc(compJa(r.comp))}</td><td>${r.starts}</td><td>${r.totalGoals}</td><td>${r.goalAssists}</td></tr>`).join('')}
+      <tr class="total"><td class="tm">合計（親善試合を除く）</td><td>${sum('starts')}</td><td>${sum('totalGoals')}</td><td>${sum('goalAssists')}</td></tr></tbody></table></div>` : '<p class="empty">今季の記録はまだありません</p>';
+
+  // 通算（Wikidata：クラブ別の出場数・ゴール数）
+  const career = p.career || [];
+  const clubs = career.filter(x => x.k === 'club'), nat = career.filter(x => x.k === 'nat'), youth = career.filter(x => x.k === 'youth' || x.k === 'natY');
+  const tot = (list, k) => list.reduce((a, x) => a + (x[k] || 0), 0);
+  const lg = (p.espn || {}).league;
+  // ESPN のシーズン別データは項目名が略称（STRT・G・A）のことがある
+  const lgSeasons = lg ? lg.seasons.map(s => ({ season: s.season, starts: s.starts ?? s.STRT ?? 0, totalGoals: s.totalGoals ?? s.G ?? 0, goalAssists: s.goalAssists ?? s.A ?? 0 }))
+    .filter(s => s.starts || s.totalGoals || s.goalAssists) : [];
+  const lgSum = k => lgSeasons.reduce((a, s) => a + (s[k] || 0), 0);
+  const totals = `<div class="tiles">
+      ${clubs.length ? `<div class="tile"><b>${tot(clubs, 'apps')}</b><span>クラブ通算出場</span></div><div class="tile"><b>${tot(clubs, 'goals')}</b><span>クラブ通算ゴール</span></div>` : ''}
+      ${nat.length ? `<div class="tile"><b>${tot(nat, 'apps')}</b><span>代表出場</span></div><div class="tile"><b>${tot(nat, 'goals')}</b><span>代表ゴール</span></div>` : ''}
+      ${lgSeasons.length ? `<div class="tile"><b>${lgSum('goalAssists')}</b><span>${esc(compJa(lg.name))}通算アシスト</span></div>` : ''}
+    </div>`;
+  const yr = x => `${x.from || '?'}〜${x.to || ''}`;
+  const row = x => `<div class="p"><span class="x yr">${yr(x)}</span><span class="grow">${esc(x.c)}</span><span class="x">${x.apps != null ? `${x.apps}試合` : ''}${x.goals != null ? ` ${x.goals}点` : ''}</span></div>`;
+  const careerHtml = career.length ? `
+      <h3>クラブ</h3><div class="card plist">${clubs.map(row).join('') || '<div class="p">記録なし</div>'}</div>
+      ${nat.length ? `<h3>代表</h3><div class="card plist">${nat.map(row).join('')}</div>` : ''}
+      ${youth.length ? `<details><summary>ユース・下部組織・年代別代表（${youth.length}）</summary><div class="card plist">${youth.map(row).join('')}</div></details>` : ''}`
+    : '<p class="empty">所属履歴のデータがありません</p>';
+  const lgHtml = lgSeasons.length ? `<h2>${esc(compJa(lg.name))}のシーズン別成績</h2><div class="card"><table class="st"><thead><tr><th style="text-align:left">シーズン</th><th>先発</th><th>ゴール</th><th>アシスト</th></tr></thead><tbody>
+      ${lgSeasons.map(s => `<tr><td class="tm">${esc((s.season.match(/\d{4}(-\d{2})?/) || [''])[0])}</td><td>${s.starts}</td><td>${s.totalGoals}</td><td>${s.goalAssists}</td></tr>`).join('')}
+      <tr class="total"><td class="tm">通算</td><td>${lgSum('starts')}</td><td>${lgSum('totalGoals')}</td><td>${lgSum('goalAssists')}</td></tr></tbody></table></div>` : '';
+
+  app.innerHTML = `<button class="back" onclick="history.back()">‹ 戻る</button>${head}
+    <h2>今季の成績（全大会）</h2>${nowHtml}
+    <h2>通算成績</h2>${totals}
+    <h2>今までの所属</h2>${careerHtml}
+    ${lgHtml}
+    <p class="note" style="margin-top:16px">今季の成績・シーズン別成績：ESPN（先発数のみで途中出場は含みません）／所属履歴・クラブ別の出場数とゴール数：Wikidata（Wikipedia の記録。主にリーグ戦の数で、更新が遅れることがあります）。毎日0時に更新。</p>
+    ${footer()}`;
+}
 
 function viewCredits() {
   setNav(null);
@@ -576,6 +643,8 @@ async function route() {
     else if (p[0] === 'm') await viewMatch(p[1], p[2], p[3], p[4]);
     else if (p[0] === 't') await viewTeam(p[1], p[2]);
     else if (p[0] === 'credits') viewCredits();
+    else if (p[0] === 'p') await viewPlayer(p[1]);
+    else if (p[0] === 'pn') await viewPlayerByName(p.slice(1).join('/'));
     else await viewHome();
   } catch (e) {
     console.error(e);
