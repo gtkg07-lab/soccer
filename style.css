@@ -253,3 +253,6 @@ summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
 .legbox a { color: var(--accent); font-weight: 600; }
 .leg { display: inline-block; font-size: 10px; font-weight: 700; color: #fff; border-radius: 4px; padding: 0 5px; line-height: 16px; white-space: nowrap; }
 .leg1 { background: #dc2626; } .leg2 { background: #2563eb; }
+.top .left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.backbtn { background: rgba(255,255,255,.12); color: #fff; border: none; border-radius: 8px; padding: 5px 10px; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.backbtn:active { background: rgba(255,255,255,.25); }

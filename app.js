@@ -246,7 +246,7 @@ async function viewComp(cid, y, tab) {
     ${tabList.length > 1 ? tabs(tabList, tab) : ''}
     <div id="body">${body}</div>${footer()}`;
   document.getElementById('season').addEventListener('change', e => { location.hash = `#/c/${cid}/${e.target.value}/${tab}`; });
-  bindTabs(app, t => { history.replaceState(null, '', `#/c/${cid}/${y}/${t}`); viewComp(cid, y, t); });
+  bindTabs(app, t => { history.replaceState(history.state, '', `#/c/${cid}/${y}/${t}`); viewComp(cid, y, t); });
   if (tab === 'games') {
     const target = document.getElementById('today') ||
       [...app.querySelectorAll('[data-day]')].find(el => el.dataset.day >= todayKey());
@@ -322,6 +322,8 @@ function noteJa(t) {
     .replace(/Europa League( Qualifying)?/gi, (_, q) => q ? 'EL予選' : 'EL出場')
     .replace(/Conference League( Qualifying)?/gi, (_, q) => q ? 'ECL予選' : 'ECL出場')
     .replace(/Qualifies for round of 16/gi, 'ラウンド16進出')
+    .replace(/Knockout phase playoffs? - unseeded/gi, 'プレーオフ進出（ノーシード）')
+    .replace(/Knockout phase playoffs? - seeded/gi, 'プレーオフ進出（シード）')
     .replace(/Qualifies for (the )?(knockout round )?playoffs?/gi, 'プレーオフ進出')
     .replace(/Qualifies for QFs/gi, '準々決勝進出')
     .replace(/Relegation or playoffs/gi, '降格または入れ替え戦')
@@ -416,7 +418,7 @@ async function viewMatch(cid, y, id, tab) {
   else body = timelineHtml(m, d);
 
   app.innerHTML = `
-    <button class="back" onclick="history.back()">‹ 戻る</button>
+    <button class="back" onclick="document.getElementById('backbtn').click()">‹ 戻る</button>
     <div class="card mhead">
       <div class="meta"><a href="#/c/${cid}/${y}">${esc(c.name)}</a> · ${esc(stageText(m))} ${legBadge(m)}</div>
       <div class="meta">${fmtFull(m.d)}${d && d.venue ? ` · ${esc(d.venue)}` : ''}</div>
@@ -429,7 +431,7 @@ async function viewMatch(cid, y, id, tab) {
       ${vids}
     </div>
     ${d ? tabs(tabList, tab) : ''}<div id="body">${body}</div>${footer()}`;
-  bindTabs(app, t => { history.replaceState(null, '', `#/m/${cid}/${y}/${id}/${t}`); viewMatch(cid, y, id, t); });
+  bindTabs(app, t => { history.replaceState(history.state, '', `#/m/${cid}/${y}/${id}/${t}`); viewMatch(cid, y, id, t); });
   bindLineupSwitch(m, d);
 }
 
@@ -632,10 +634,10 @@ async function viewTeam(id, tab) {
     if (!body) body = '<p class="empty">試合はありません</p>';
   }
   app.innerHTML = `
-    <button class="back" onclick="history.back()">‹ 戻る</button>
+    <button class="back" onclick="document.getElementById('backbtn').click()">‹ 戻る</button>
     <div class="pagehead">${logo(id, 'xl')}<div><h1>${esc(t.n)}</h1><div class="sub">${esc(t.en)}${roster ? ` · ${roster.players.length}人` : ''}</div></div></div>
     ${tabs([['players', '選手'], ['coach', '監督'], ['games', '試合']], tab)}<div id="body">${body}</div>${footer()}`;
-  bindTabs(app, k => { history.replaceState(null, '', `#/t/${id}/${k}`); viewTeam(id, k); });
+  bindTabs(app, k => { history.replaceState(history.state, '', `#/t/${id}/${k}`); viewTeam(id, k); });
 }
 
 function footer() {
@@ -663,9 +665,9 @@ function compJa(name) {
 }
 async function viewPlayerByName(name) {
   const idx = (await load('players_index.json')) || {};
-  if (idx[name]) { history.replaceState(null, '', `#/p/${idx[name]}`); return viewPlayer(idx[name]); }
+  if (idx[name]) { history.replaceState(history.state, '', `#/p/${idx[name]}`); return viewPlayer(idx[name]); }
   setNav(null);
-  app.innerHTML = `<button class="back" onclick="history.back()">‹ 戻る</button>
+  app.innerHTML = `<button class="back" onclick="document.getElementById('backbtn').click()">‹ 戻る</button>
     <div class="card phead">${avatar({ n: name }, 'av xl')}<div><h1>${esc(pn(name))}</h1><div class="sub">${esc(name)}</div></div></div>
     <p class="empty">この選手は現在の所属チームの選手一覧に無いため、詳しいデータはありません</p>${footer()}`;
 }
@@ -715,7 +717,7 @@ async function viewPlayer(id) {
       ${lgSeasons.map(s => `<tr><td class="tm">${esc((s.season.match(/\d{4}(-\d{2})?/) || [''])[0])}</td><td>${s.starts}</td><td>${s.totalGoals}</td><td>${s.goalAssists}</td></tr>`).join('')}
       <tr class="total"><td class="tm">通算</td><td>${lgSum('starts')}</td><td>${lgSum('totalGoals')}</td><td>${lgSum('goalAssists')}</td></tr></tbody></table></div>` : '';
 
-  app.innerHTML = `<button class="back" onclick="history.back()">‹ 戻る</button>${head}
+  app.innerHTML = `<button class="back" onclick="document.getElementById('backbtn').click()">‹ 戻る</button>${head}
     <h2>今季の成績（全大会）</h2>${nowHtml}
     <h2>通算成績</h2>${totals}
     <h2>今までの所属</h2>${careerHtml}
@@ -729,15 +731,24 @@ function viewCredits() {
   const rows = Object.entries(CREDIT).filter(([n]) => !photoIsAF(n))
     .sort((a, b) => pn(a[0]).localeCompare(pn(b[0]), 'ja'))
     .map(([n, c]) => `<div class="p"><img class="av" src="${esc(PHOTOS[n])}" alt="" loading="lazy"><span class="grow">${esc(pn(n))}<br><span class="x">${esc(c.a)}／<a href="${esc(c.u || c.f)}" target="_blank" rel="noopener">${esc(c.l)}</a>・<a href="${esc(c.f)}" target="_blank" rel="noopener">元の写真</a></span></span></div>`);
-  app.innerHTML = `<button class="back" onclick="history.back()">‹ 戻る</button>
+  app.innerHTML = `<button class="back" onclick="document.getElementById('backbtn').click()">‹ 戻る</button>
     <h2>写真のクレジット</h2>
     <p class="explain" style="padding:0">選手の顔写真の一部は Wikimedia Commons の写真を、各ライセンス（クリエイティブ・コモンズなど）に従って縮小して表示しています。写真をタップしても撮影者とライセンスを確認できます。その他の写真は API-Football の提供です。</p>
     <div class="card plist">${rows.join('')}</div>${footer()}`;
 }
 
 // ===== ルーティング =====
+// 画面上部の戻るボタン：アプリ内で移動してきたなら1つ前へ、そうでなければ（直接開いたときなど）ホームへ
+// 各ページの履歴に「アプリ内で何ページ目か（d）」を記録しておく
+let lastDepth = 0;
+document.getElementById('backbtn').addEventListener('click', () => {
+  if (history.state && history.state.d > 0) history.back();
+  else location.hash = '#/';
+});
+
 async function route() {
   const p = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  document.getElementById('backbtn').hidden = p.length === 0;
   window.scrollTo(0, 0);
   try {
     if (p[0] === 'c') await viewComp(p[1], p[2], p[3]);
@@ -767,6 +778,11 @@ async function route() {
   if (INDEX.updated) {
     document.getElementById('updated').textContent = '更新 ' + new Date(INDEX.updated).toLocaleString('ja-JP', { ...JST, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
-  window.addEventListener('hashchange', route);
+  history.replaceState({ d: 0 }, '');
+  window.addEventListener('hashchange', () => {
+    if (!history.state || history.state.d == null) history.replaceState({ d: lastDepth + 1 }, '');
+    lastDepth = history.state.d;
+    route();
+  });
   route();
 })();
