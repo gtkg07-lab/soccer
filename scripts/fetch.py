@@ -1135,6 +1135,109 @@ def normalize_coaches(lst):
     return keep
 
 
+def wiki_items(titles):
+    """英語版 Wikipedia のページ名 → Wikidata の項目ID（リダイレクトも追う）。"""
+    out = {}
+    titles = list(dict.fromkeys(t for t in titles if t))
+    for i in range(0, len(titles), 50):
+        chunk = titles[i:i + 50]
+        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+            {"action": "query", "format": "json", "redirects": 1, "prop": "pageprops", "ppprop": "wikibase_item",
+             "titles": "|".join(chunk)})
+        d = None
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
+                    d = json.load(r)["query"]
+                break
+            except (OSError, ValueError, KeyError) as e:
+                print("  Wikipedia 失敗:", e, file=sys.stderr)
+                time.sleep(30 * (attempt + 1))
+        if d is None:
+            continue
+        alias = {x["from"]: x["to"] for x in d.get("normalized", [])}
+        redir = {x["from"]: x["to"] for x in d.get("redirects", [])}
+        pages = {pg.get("title"): pg for pg in d.get("pages", {}).values()}
+        for t in chunk:
+            a = alias.get(t, t)
+            q = pages.get(redir.get(a, a), {}).get("pageprops", {}).get("wikibase_item")
+            if q:
+                out[t] = q
+        time.sleep(3)
+    return out
+
+
+def wikidata_coaches(teams, national):
+    """Wikidata の「監督（P286）」の記録（就任日・退任日・日本語名つき）をチームごとに取る。
+    チームの項目は英語版 Wikipedia のページ名から探し、サッカークラブ／代表チームであることを確かめる。"""
+    cands = {}
+    for tid in sorted({os.path.basename(p)[:-5] for p in glob.glob(os.path.join(ROOT, "t", "*.json"))}):
+        n = teams.get(tid, {}).get("n", "")
+        if not n:
+            continue
+        if tid in national:
+            cands[tid] = [n + " national football team", n.replace("-", " and ") + " national football team"]
+        else:
+            cands[tid] = [n + " F.C.", n + " FC", n, "FC " + n, n + " CF", "AS " + n]
+    items = wiki_items([t for ts in cands.values() for t in ts])
+    team_q = {}
+    for tid, ts in cands.items():
+        qs = [items[t] for t in ts if t in items]
+        if qs:
+            team_q[tid] = qs
+    allq = sorted({q for qs in team_q.values() for q in qs})
+    kind = {}
+    for i in range(0, len(allq), 200):
+        rows = sparql('SELECT ?t ?c WHERE { VALUES ?t { %s } ?t wdt:P31 ?c. FILTER(?c IN (wd:Q476028, wd:Q6979593, wd:Q135408445, wd:Q103229495)) }'
+                      % " ".join("wd:" + q for q in allq[i:i + 200]))
+        for b in rows or []:
+            kind[b["t"]["value"].rsplit("/", 1)[1]] = True
+    team_q = {tid: next((q for q in qs if q in kind), None) for tid, qs in team_q.items()}
+    team_q = {k: v for k, v in team_q.items() if v}
+    out = {}
+    qs = sorted(set(team_q.values()))
+    for i in range(0, len(qs), 60):
+        rows = sparql('''SELECT ?t ?coach ?en ?ja ?start ?sp ?end ?ep WHERE {
+  VALUES ?t { %s }
+  ?t p:P286 ?st. ?st ps:P286 ?coach; wikibase:rank ?rank. FILTER(?rank != wikibase:DeprecatedRank)
+  OPTIONAL { ?st pqv:P580 ?sv. ?sv wikibase:timeValue ?start; wikibase:timePrecision ?sp }
+  OPTIONAL { ?st pqv:P582 ?ev. ?ev wikibase:timeValue ?end; wikibase:timePrecision ?ep }
+  OPTIONAL { ?coach rdfs:label ?en FILTER(lang(?en) = "en") }
+  OPTIONAL { ?coach rdfs:label ?ja FILTER(lang(?ja) = "ja") }
+}''' % " ".join("wd:" + q for q in qs[i:i + 60]))
+        for b in rows or []:
+            g = lambda k: b.get(k, {}).get("value", "")
+            if not g("start"):
+                continue
+            out.setdefault(g("t").rsplit("/", 1)[1], []).append({
+                "n": g("en"), "full": g("en"), "dn": g("en"), "ja": re.sub(r"\s*[(（].*?[)）]\s*$", "", g("ja")).strip(),
+                "nat": "", "photo": "", "from": g("start")[:10], "to": g("end")[:10], "src": "wd",
+                "fp": int(g("sp") or 11), "tp": int(g("ep") or 11) if g("end") else 11})
+        time.sleep(2)
+    for lst in out.values():
+        fix_precision(lst)
+    return {tid: out.get(q, []) for tid, q in team_q.items()}
+
+
+def fix_precision(lst):
+    """「年」だけ（精度9）や「月」まで（精度10）の日付を扱う。
+    ・退任が年だけ → 退任日不明として次の監督の就任で区切る（表示用に年を残す）
+    ・就任が年だけ → 同じ年に日付まで分かっている他の監督の就任の後ろに並べる（表示は「〇年〜」）"""
+    for c in lst:
+        if c["to"] and c["tp"] < 11:
+            c["toY"], c["to"] = c["to"][:4 if c["tp"] < 10 else 7], ""
+    for c in lst:
+        if c["fp"] < 11:
+            y = c["from"][:4]
+            same = [x["from"] for x in lst if x is not c and x["fp"] >= 11 and x["from"][:4] == y]
+            base = max(same + [c["from"]])
+            if same:
+                base = (datetime.strptime(base, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            c["fromY"], c["from"] = c["from"][:4 if c["fp"] < 10 else 7], base
+    for c in lst:
+        c.pop("fp", None), c.pop("tp", None)
+
+
 def update_coaches(teams):
     """API-Football の監督データ（就任日・退任日つき）を、チームごとに週1回取り直して data/coaches.json に保存する。
     写真の取得と同じ無料枠（1日90回まで）を分け合う。"""
@@ -1169,6 +1272,23 @@ def update_coaches(teams):
         for c in lst:
             c["dn"] = display_coach_name(c)
         co["teams"][tid] = {"checked": today, "list": normalize_coaches(lst)}
+    # Wikidata に最近の記録（直近3年の就任、または在任中）があるチームは Wikidata を優先する。
+    # API-Football は別チームの監督が紛れ込むことがあるため（例：スペイン代表に南アフリカ人監督）
+    national = {m[k]["id"] for p in glob.glob(os.path.join(ROOT, "unl", "*", "matches.json"))
+                for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+    recent = (datetime.now(timezone.utc) - timedelta(days=3 * 365)).strftime("%Y-%m-%d")
+    for tid, lst in wikidata_coaches(teams, national).items():
+        if any(c["from"] >= recent or not c["to"] for c in lst):
+            af_list = co["teams"].get(tid, {}).get("list", [])
+            for c in lst:  # 写真と国籍は API-Football の同じ人から借りる（名字が一致する人）
+                hit = next((a for a in af_list if surname(a.get("full") or a["n"]) == surname(c["n"])), None)
+                if hit:
+                    c["photo"], c["nat"] = hit.get("photo", ""), hit.get("nat", "")
+                if c["ja"]:
+                    co["ja"][c["full"]] = c["ja"]
+            co["teams"].setdefault(tid, {"checked": ""})["list"] = normalize_coaches(
+                [{k: v for k, v in c.items() if k != "ja"} for c in lst])
+            co["teams"][tid]["src"] = "wikidata"
     # 日本語名（まだ無い人だけ）
     todo = {c["full"]: c for t in co["teams"].values() for c in t["list"] if c["full"] not in co["ja"]}
     if todo:

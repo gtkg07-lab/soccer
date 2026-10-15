@@ -57,10 +57,36 @@ function load(path) {
   if (!cache[path]) {
     cache[path] = fetch('data/' + path, { cache: 'no-cache' })
       .then(r => (r.ok ? r.json() : null))
+      .then(d => (d && path.endsWith('matches.json') ? linkLegs(d) : d))
       .catch(() => null);
   }
   return cache[path];
 }
+
+// ホーム&アウェイの2試合制：同じ段階・同じ2チームの試合を組にして、もう一方の試合と2試合合計を付ける
+function linkLegs(list) {
+  const ties = new Map();
+  for (const m of list) {
+    if (!m.leg || !m.h || !m.a) continue;
+    const key = `${m.st}|${[m.h.id, m.a.id].sort().join('-')}`;
+    if (!ties.has(key)) ties.set(key, []);
+    ties.get(key).push(m);
+  }
+  for (const legs of ties.values()) {
+    if (legs.length !== 2) continue;
+    legs.sort((a, b) => a.leg - b.leg);
+    const [l1, l2] = legs;
+    l1.other = l2; l2.other = l1;
+    if (l1.s === 'post' && l2.s !== 'pre') {
+      // 2試合合計（第2戦のホーム・アウェイの向きで数える）
+      const h = +l2.h.sc + (l1.h.id === l2.h.id ? +l1.h.sc : +l1.a.sc);
+      const a = +l2.a.sc + (l1.a.id === l2.a.id ? +l1.a.sc : +l1.h.sc);
+      l2.agg = { h, a };
+    }
+  }
+  return list;
+}
+const legLabel = m => (m.leg ? `第${m.leg}戦` : '');
 let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} }, PHOTOS = {}, CREDIT = {};
 // 日本語名があれば使う（en は YouTube 検索用に英語名を残す）
 const team = id => {
@@ -120,11 +146,11 @@ function matchRow(m, cid, y, opts = {}) {
   const aw = m.s === 'post' && (m.a.w || (m.adv && m.adv === m.a.id));
   const live = m.s === 'in';
   const pen = m.h.pen != null ? `<small>PK ${m.h.pen}-${m.a.pen}</small>` : '';
-  const sub = opts.compTag ? SHORT[cid] : opts.stage ? stageText(m) : '';
+  const sub = opts.compTag ? [SHORT[cid], legLabel(m)].filter(Boolean).join(' ') : opts.stage ? stageText(m) : '';
   return `<a class="match" href="#/m/${cid}/${y}/${m.id}">
     <div class="time ${live ? 'live' : ''}">${esc(statusText(m))}${sub ? `<div class="tag">${esc(sub)}</div>` : ''}</div>
     <div class="team home ${hw ? 'win' : ''}"><span>${esc(team(m.h.id).s)}</span>${logo(m.h.id)}</div>
-    <div class="score ${pre ? 'pre' : ''}">${pre ? 'vs' : `${m.h.sc}-${m.a.sc}`}${pen}</div>
+    <div class="score ${pre ? 'pre' : ''}">${pre ? 'vs' : `${m.h.sc}-${m.a.sc}`}${pen}${m.agg ? `<small>合計 ${m.agg.h}-${m.agg.a}</small>` : ''}</div>
     <div class="team ${aw ? 'win' : ''}">${logo(m.a.id)}<span>${esc(team(m.a.id).s)}</span></div>
   </a>`;
 }
@@ -370,6 +396,13 @@ async function viewMatch(cid, y, id, tab) {
       ${vlink(hl.h, `${H.en} vs ${A.en} highlights ${season ? season.label : ''}`, 'ハイライト')}
       ${vlink(hl.l, `${H.en} vs ${A.en} extended highlights`, 'ロングハイライト')}
     </div>${hl.h || hl.l ? `<div class="note">${esc([hl.h, hl.l].filter(Boolean).map(v => v.ch).filter((v, i, a) => a.indexOf(v) === i).join('・'))} の動画</div>` : '<div class="note">動画が見つかるまでは YouTube の検索結果が開きます</div>'}` : '';
+  // 2試合制：もう一方の試合へのリンクと、第2戦なら2試合合計・勝ち上がり
+  const o = m.other;
+  const advId = m.adv || (m.agg && m.s === 'post' && m.agg.h !== m.agg.a ? (m.agg.h > m.agg.a ? m.h.id : m.a.id) : null);
+  const legBox = o ? `<div class="legbox">
+      ${m.agg ? `<div><b>2試合合計 ${m.agg.h} - ${m.agg.a}</b>${m.h.pen != null ? `（PK ${m.h.pen}-${m.a.pen}）` : ''}${advId ? ` ・ <b>${esc(team(advId).s)}</b> が勝ち上がり` : m.s === 'in' ? '（試合中）' : ''}</div>` : ''}
+      <a href="#/m/${cid}/${y}/${o.id}">${legLabel(o)}：${fmtDay(o.d)} ${o.s === 'pre' ? `${fmtTime(o.d)} キックオフ` : `${esc(team(o.h.id).s)} ${o.h.sc}-${o.a.sc} ${esc(team(o.a.id).s)}`} ›</a>
+    </div>` : '';
   const big = m.s === 'pre'
     ? `<div class="big" style="font-size:20px">${fmtTime(m.d)}<small>キックオフ</small></div>`
     : `<div class="big">${m.h.sc} - ${m.a.sc}<small style="${m.s === 'in' ? 'color:var(--live);font-weight:700' : ''}">${m.h.pen != null ? `PK戦 ${m.h.pen}-${m.a.pen}` : esc(statusText(m))}</small></div>`;
@@ -392,6 +425,7 @@ async function viewMatch(cid, y, id, tab) {
       </div>
       ${d ? `<div class="scorers"><div>${scorers(m.h.id)}</div><div>${scorers(m.a.id)}</div></div>` : ''}
       ${coachLine}
+      ${legBox}
       ${vids}
     </div>
     ${d ? tabs(tabList, tab) : ''}<div id="body">${body}</div>${footer()}`;
@@ -535,7 +569,9 @@ function coachAt(co, tid, date) {
   const hit = coachesBetween(co, tid, date, date);
   return hit.length ? hit[hit.length - 1] : null;
 }
-const ym = d => d ? `${+d.slice(0, 4)}年${+d.slice(5, 7)}月` : '';
+const ym = d => d ? (d.length === 4 ? `${d}年` : `${+d.slice(0, 4)}年${+d.slice(5, 7)}月`) : '';
+// 就任・退任の表示（年だけ分かっている日付は「〇年」）
+const cFrom = c => ym(c.fromY || c.from), cTo = c => ym(c.toY || c.to);
 const coachAvatar = c => c.photo ? `<img class="av" src="${esc(c.photo)}" alt="" loading="lazy" onerror="this.className='av none';this.removeAttribute('src')">` : '<span class="av none"></span>';
 
 function coachHtml(co, id, all) {
@@ -556,12 +592,12 @@ function coachHtml(co, id, all) {
   const rows = [...seasons.entries()].sort((a, b) => b[0] - a[0]).map(([, e]) => {
     const cs = coachesBetween(co, id, e.start, e.end > today ? today : e.end);
     const names = cs.length
-      ? cs.map(c => `${esc(coachName(co, c))}${cs.length > 1 ? `<span class="x">（${c.from >= e.start ? ym(c.from) : ''}〜${c.to && c.to <= e.end ? ym(c.to) : ''}）</span>` : ''}`).join(' → ')
+      ? cs.map(c => `${esc(coachName(co, c))}${cs.length > 1 ? `<span class="x">（${c.from >= e.start ? cFrom(c) : ''}〜${c.to && c.to <= e.end ? cTo(c) : ''}）</span>` : ''}`).join(' → ')
       : '<span class="x">不明</span>';
     return `<div class="p"><span class="x yr">${esc(e.label)}</span><span class="grow">${names}</span></div>`;
   }).join('');
   return `<h2>監督</h2>
-    ${now ? `<div class="card plist"><div class="p">${coachAvatar(now)}<span class="grow"><b>${esc(coachName(co, now))}</b><br><span class="x">${[country(now.nat), now.from ? `${ym(now.from)}就任` : ''].filter(Boolean).map(esc).join(' · ')}</span></span></div></div>` : ''}
+    ${now ? `<div class="card plist"><div class="p">${coachAvatar(now)}<span class="grow"><b>${esc(coachName(co, now))}</b><br><span class="x">${[country(now.nat), now.from ? `${cFrom(now)}就任` : ''].filter(Boolean).map(esc).join(' · ')}</span></span></div></div>` : ''}
     ${rows ? `<h3>シーズンごとの監督</h3><div class="card plist">${rows}</div>` : ''}`;
 }
 
