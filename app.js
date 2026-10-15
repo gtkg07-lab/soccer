@@ -360,6 +360,7 @@ async function viewMatch(cid, y, id, tab) {
   // 見つかった動画があれば直接、無ければ YouTube の検索結果を開く
   const hl = ((await load('highlights.json')) || {})[id] || {};
   const co = (await load('coaches.json')) || { teams: {}, ja: {} };
+  matchCoaches = co;
   const ch = coachAt(co, m.h.id, m.d.slice(0, 10)), ca = coachAt(co, m.a.id, m.d.slice(0, 10));
   const coachLine = ch || ca ? `<div class="scorers coachline"><div>${ch ? `監督 ${esc(coachName(co, ch))}` : ''}</div><div>${ca ? `監督 ${esc(coachName(co, ca))}` : ''}</div></div>` : '';
   const vlink = (v, query, label) => v
@@ -454,6 +455,7 @@ function formationRows(players, form) {
   return rows;
 }
 let lineupSide = 'home';
+let matchCoaches = { teams: {}, ja: {} }; // 試合詳細で読み込んだ監督データ（スタメン表示でも使う）
 // 簡易評価の表示（色は評価の高さで変える）
 const plink = p => p.id ? `#/p/${p.id}` : `#/pn/${encodeURIComponent(p.n)}`;
 const rateClass = r => r >= 8 ? 'r8' : r >= 7 ? 'r7' : r >= 6.5 ? 'r65' : r >= 6 ? 'r6' : r >= 5 ? 'r5' : 'r4';
@@ -496,6 +498,7 @@ function lineupHtml(m, d) {
   const bench = L.players.filter(p => !p.st);
   return `<div class="tabs" id="side"><button data-side="home" class="${side === 'home' ? 'on' : ''}">${esc(team(m.h.id).s)}</button><button data-side="away" class="${side === 'away' ? 'on' : ''}">${esc(team(m.a.id).s)}</button></div>
     <div class="formation">${logo(tid)}<b>${esc(L.form || '')}</b></div>
+    ${(c => c ? `<div class="lcoach">${coachAvatar(c)}<span><span class="x">監督</span> <b>${esc(coachName(matchCoaches, c))}</b></span></div>` : '')(coachAt(matchCoaches, tid, m.d.slice(0, 10)))}
     <div class="pitch">${dots}</div>
     ${L.players.some(p => p.r != null) ? RATE_NOTE : ''}
     <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<a class="p" href="${plink(p)}"><span class="no">${esc(p.num)}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))} ${marks(p.n)}${p.in ? `<span class="x"> ↑途中出場${p.min ? `（${p.min}分）` : ''}</span>` : ''}</span>${rateChip(p)}</a>`).join('')}</div>`;
