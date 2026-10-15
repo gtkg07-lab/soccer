@@ -392,6 +392,104 @@ def is_club_channel(ch, team, ja):
     return any(len(x) >= 3 and ch.startswith(x) for x in heads) and not FAN_WORDS.search(ch)
 
 
+# 日本の放送局の公式チャンネル（ここの動画を最優先で使う）
+JP_CHANNELS = {
+    "UCJQj2lbG_3w8UrncJd7JZXw": "WOWOWサッカー official",  # チャンピオンズリーグ
+    "UCoFLB_Gw_AoxUuuzKjXrc_Q": "DAZN Japan",              # ラ・リーガ・リーグアン・ネーションズリーグ
+    "UCMjvvElkdLRTgcTKklAUkSw": "U-NEXT フットボール",      # プレミアリーグ・ラ・リーガ
+}
+JP_SKIP = re.compile(r"ピッチレベル|ゴール集|プレビュー|インタビュー|会見|LIVE|ライブ|配信|見どころ|予想|#shorts", re.I)
+JP_LONG = re.compile(r"ロング|フルハイライト|拡大", re.I)
+# タイトルに入る大会名（試合の大会と一致する動画だけを使う。AFCチャンピオンズリーグなどの取り違え防止）
+JP_COMP = {"premier": re.compile(r"プレミアリーグ"), "laliga": re.compile(r"ラ・?リーガ"), "ligue1": re.compile(r"リーグ・?アン"),
+           "ucl": re.compile(r"(?<!AFC)(?<!AFC )(UEFA)?チャンピオンズリーグ(?!エリート)"), "unl": re.compile(r"ネーションズリーグ")}
+JP_PAIR = re.compile(r"[【｜|]\s*([^【】｜|]+?)\s*(?:\s[vV][sS]?\.?\s|×)\s*([^【】｜|]+?)\s*(?=[｜|】])")
+
+
+def jpnorm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKC", s or "").lower()
+    for a, b in (("ヴァ", "バ"), ("ヴィ", "ビ"), ("ヴェ", "ベ"), ("ヴォ", "ボ"), ("ヴ", "ブ")):
+        s = s.replace(a, b)
+    return re.sub(r"[\s・･=＝ー\-./／]|\bf\.?c\b|\bc\.?f\b", "", s)
+
+
+def name_sim(a, b):
+    """2つのチーム名の近さ（共通する一番長い部分の長さ ÷ 短い方の長さ）。"""
+    import difflib
+    a, b = jpnorm(a), jpnorm(b)
+    if not a or not b:
+        return 0
+    m = difflib.SequenceMatcher(None, a, b).find_longest_match(0, len(a), 0, len(b))
+    return m.size / min(len(a), len(b)) if m.size >= 2 else 0
+
+
+def update_jp_highlights(teams, full=False):
+    """WOWOW・DAZN Japan・U-NEXT の新着動画一覧（1回1ユニットで安い）を見て、タイトルのチーム名と試合日で照合する。
+    見つかった動画は、すでにある他のチャンネルの動画より優先して差し替える。"""
+    key = os.environ.get("YT_API_KEY")
+    if not key:
+        return
+    hl = load("highlights.json", {})
+    names_ja = load("names_ja.json", {}).get("teams", {})
+    matches = []
+    for comp in COMPETITIONS:
+        for path in glob.glob(os.path.join(ROOT, comp["id"], "*", "matches.json")):
+            for m in load(os.path.relpath(path, ROOT), []):
+                if m["s"] == "post" and m.get("h") and m.get("a"):
+                    ko = datetime.strptime(m["d"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+                    matches.append((ko, m, comp["id"]))
+    def cands(tid):
+        t, ja = teams.get(tid, {}), names_ja.get(tid) or []
+        return [x for x in [*ja, t.get("n"), t.get("s")] if x]
+    stop = datetime(2025, 7, 1, tzinfo=timezone.utc)
+    found = 0
+    for ch_id, ch_name in JP_CHANNELS.items():
+        token, pages = None, 0
+        while True:
+            params = {"part": "snippet", "maxResults": 50, "playlistId": "UU" + ch_id[2:], "key": key}
+            if token:
+                params["pageToken"] = token
+            d = get("https://www.googleapis.com/youtube/v3/playlistItems?" + urllib.parse.urlencode(params), retries=1)
+            pages += 1
+            if not d:
+                break
+            oldest = None
+            for it in d.get("items", []):
+                sn = it["snippet"]
+                title = html.unescape(sn.get("title", ""))
+                pub = datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00"))
+                oldest = pub
+                if "ハイライト" not in title or JP_SKIP.search(title):
+                    continue
+                best = None
+                for a, b in JP_PAIR.findall(title):
+                    for ko, m, cid in matches:
+                        if not (ko - timedelta(hours=3) <= pub <= ko + timedelta(days=5)) or not JP_COMP[cid].search(title):
+                            continue
+                        ha = min(max(name_sim(a, c) for c in cands(m["h"]["id"])), max(name_sim(b, c) for c in cands(m["a"]["id"])))
+                        ah = min(max(name_sim(a, c) for c in cands(m["a"]["id"])), max(name_sim(b, c) for c in cands(m["h"]["id"])))
+                        score = max(ha, ah)
+                        if score >= 0.6 and (best is None or score > best[0]):
+                            best = (score, m)
+                if not best:
+                    continue
+                m = best[1]
+                kind = "l" if JP_LONG.search(title) else "h"
+                e = hl.setdefault(m["id"], {})
+                cur = e.get(kind)
+                if not cur or not cur.get("jp"):
+                    e[kind] = {"id": sn["resourceId"]["videoId"], "t": title, "ch": ch_name, "jp": True}
+                    found += 1
+            token = d.get("nextPageToken")
+            # 普段は最新の50本だけ。full のときは 2025年7月まで遡る
+            if not token or not full or (oldest and oldest < stop):
+                break
+            time.sleep(0.2)
+    save("highlights.json", hl)
+    print("  日本の公式ハイライト:", found, "件を反映")
+
+
 def update_highlights(teams):
     """終わった試合のハイライト動画を YouTube で探して data/highlights.json に保存する。"""
     key = os.environ.get("YT_API_KEY")
@@ -415,8 +513,8 @@ def update_highlights(teams):
                 if m["s"] != "post" or not m.get("h") or not m.get("a"):
                     continue
                 ko = datetime.strptime(m["d"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
-                if now - ko < timedelta(hours=3):
-                    continue
+                if now - ko < timedelta(hours=12):
+                    continue  # 日本の放送局の動画を待つ（キーワード検索は見つからなかったときの予備）
                 e = hl.get(m["id"], {})
                 if e.get("h") and e.get("l"):
                     continue
@@ -981,6 +1079,7 @@ def main():
 
     save("teams.json", teams)
     build_names(lookup_new=with_rosters)
+    update_jp_highlights(teams, full="--full-highlights" in sys.argv)
     update_highlights(teams)
     if with_rosters:
         update_photos(teams)
