@@ -359,6 +359,9 @@ async function viewMatch(cid, y, id, tab) {
   const season = c.seasons.find(s => s.y === +y);
   // 見つかった動画があれば直接、無ければ YouTube の検索結果を開く
   const hl = ((await load('highlights.json')) || {})[id] || {};
+  const co = (await load('coaches.json')) || { teams: {}, ja: {} };
+  const ch = coachAt(co, m.h.id, m.d.slice(0, 10)), ca = coachAt(co, m.a.id, m.d.slice(0, 10));
+  const coachLine = ch || ca ? `<div class="scorers coachline"><div>${ch ? `監督 ${esc(coachName(co, ch))}` : ''}</div><div>${ca ? `監督 ${esc(coachName(co, ca))}` : ''}</div></div>` : '';
   const vlink = (v, query, label) => v
     ? `<a href="https://www.youtube.com/watch?v=${esc(v.id)}" target="_blank" rel="noopener" title="${esc(v.t)}">${YT_ICON}${label}</a>`
     : `<a class="search" href="https://www.youtube.com/results?search_query=${q(query)}" target="_blank" rel="noopener">${YT_ICON}${label}を検索</a>`;
@@ -387,6 +390,7 @@ async function viewMatch(cid, y, id, tab) {
         <a href="#/t/${m.h.id}">${logo(m.h.id, 'xl')}${esc(H.s)}</a>${big}<a href="#/t/${m.a.id}">${logo(m.a.id, 'xl')}${esc(A.s)}</a>
       </div>
       ${d ? `<div class="scorers"><div>${scorers(m.h.id)}</div><div>${scorers(m.a.id)}</div></div>` : ''}
+      ${coachLine}
       ${vids}
     </div>
     ${d ? tabs(tabList, tab) : ''}<div id="body">${body}</div>${footer()}`;
@@ -517,6 +521,47 @@ function timelineHtml(m, d) {
 }
 
 // ===== チーム =====
+// ===== 監督 =====
+// 就任日・退任日から「その日に指揮していた監督」や「シーズンごとの監督」を求める
+const coachName = (co, c) => co.ja[c.full] || c.dn || c.full || c.n;
+function coachesBetween(co, tid, start, end) {
+  const list = ((co.teams || {})[tid] || {}).list || [];
+  return list.filter(c => c.from && c.from <= end && (!c.to || c.to >= start));
+}
+function coachAt(co, tid, date) {
+  const hit = coachesBetween(co, tid, date, date);
+  return hit.length ? hit[hit.length - 1] : null;
+}
+const ym = d => d ? `${+d.slice(0, 4)}年${+d.slice(5, 7)}月` : '';
+const coachAvatar = c => c.photo ? `<img class="av" src="${esc(c.photo)}" alt="" loading="lazy" onerror="this.className='av none';this.removeAttribute('src')">` : '<span class="av none"></span>';
+
+function coachHtml(co, id, all) {
+  const list = ((co.teams || {})[id] || {}).list;
+  if (!list) return '';
+  const today = new Date().toISOString().slice(0, 10);
+  const now = coachAt(co, id, today);
+  // シーズンごと：そのシーズンにこのチームが戦った最初と最後の試合の間に指揮した監督
+  const seasons = new Map();
+  for (const x of all) {
+    const c = comp(x.cid), s = c.seasons.find(v => v.y === x.y);
+    const key = `${x.y}`;
+    const e = seasons.get(key) || { label: s ? s.label : x.y, start: x.m.d.slice(0, 10), end: x.m.d.slice(0, 10) };
+    if (x.m.d.slice(0, 10) < e.start) e.start = x.m.d.slice(0, 10);
+    if (x.m.d.slice(0, 10) > e.end) e.end = x.m.d.slice(0, 10);
+    seasons.set(key, e);
+  }
+  const rows = [...seasons.entries()].sort((a, b) => b[0] - a[0]).map(([, e]) => {
+    const cs = coachesBetween(co, id, e.start, e.end > today ? today : e.end);
+    const names = cs.length
+      ? cs.map(c => `${esc(coachName(co, c))}${cs.length > 1 ? `<span class="x">（${c.from >= e.start ? ym(c.from) : ''}〜${c.to && c.to <= e.end ? ym(c.to) : ''}）</span>` : ''}`).join(' → ')
+      : '<span class="x">不明</span>';
+    return `<div class="p"><span class="x yr">${esc(e.label)}</span><span class="grow">${names}</span></div>`;
+  }).join('');
+  return `<h2>監督</h2>
+    ${now ? `<div class="card plist"><div class="p">${coachAvatar(now)}<span class="grow"><b>${esc(coachName(co, now))}</b><br><span class="x">${[country(now.nat), now.from ? `${ym(now.from)}就任` : ''].filter(Boolean).map(esc).join(' · ')}</span></span></div></div>` : ''}
+    ${rows ? `<h3>シーズンごとの監督</h3><div class="card plist">${rows}</div>` : ''}`;
+}
+
 async function viewTeam(id, tab) {
   setNav(null);
   const t = team(id);
@@ -528,9 +573,12 @@ async function viewTeam(id, tab) {
   })));
   all.sort((a, b) => a.m.d.localeCompare(b.m.d));
   if (!tab) tab = 'players';
+  const co = (await load('coaches.json')) || { teams: {}, ja: {} };
 
   let body = '';
-  if (tab === 'players') {
+  if (tab === 'coach') {
+    body = coachHtml(co, id, all) || '<p class="empty">監督のデータはまだありません</p>';
+  } else if (tab === 'players') {
     if (!roster) body = '<p class="empty">選手一覧はまだありません</p>';
     else body = Object.entries(POS_GROUP).map(([k, label]) => {
       const ps = roster.players.filter(p => (p.pos || '').startsWith(k)).sort((a, b) => (+a.num || 99) - (+b.num || 99));
@@ -547,7 +595,7 @@ async function viewTeam(id, tab) {
   app.innerHTML = `
     <button class="back" onclick="history.back()">‹ 戻る</button>
     <div class="pagehead">${logo(id, 'xl')}<div><h1>${esc(t.n)}</h1><div class="sub">${esc(t.en)}${roster ? ` · ${roster.players.length}人` : ''}</div></div></div>
-    ${tabs([['players', '選手'], ['games', '試合']], tab)}<div id="body">${body}</div>${footer()}`;
+    ${tabs([['players', '選手'], ['coach', '監督'], ['games', '試合']], tab)}<div id="body">${body}</div>${footer()}`;
   bindTabs(app, k => { history.replaceState(null, '', `#/t/${id}/${k}`); viewTeam(id, k); });
 }
 

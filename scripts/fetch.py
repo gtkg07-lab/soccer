@@ -1033,6 +1033,122 @@ def update_players(full=False):
     print("  選手詳細:", len(ps), "人（Wikidata対応", sum(1 for i in ps if wd.get(i)), "人、ESPN更新", len(espn_todo), "人）")
 
 
+def display_coach_name(c):
+    """表示用の名前。API-Football の短い名前（"J. Klopp" のような頭文字は避ける）か、本名の最初と最後。"""
+    if c.get("n") and not re.match(r"^[A-Z]\.\s", c["n"]):
+        return c["n"]
+    parts = (c.get("full") or "").split()
+    return " ".join([parts[0], parts[-1]]) if len(parts) > 2 else (c.get("full") or c.get("n") or "")
+
+
+def coach_ja(coaches):
+    """監督の日本語名を探す。英語版 Wikipedia のページ（表記ゆれはリダイレクトで吸収）→ Wikidata の日本語名。
+    サッカー選手・監督として登録されている人だけを採用する。戻り値は {本名: 日本語名}。"""
+    titles = {}
+    for c in coaches:
+        for t in dict.fromkeys([c.get("full"), display_coach_name(c)]):
+            if t:
+                titles.setdefault(t, set()).add(c["full"])
+    qid_of = {}
+    tl = sorted(titles)
+    for i in range(0, len(tl), 50):
+        chunk = tl[i:i + 50]
+        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+            {"action": "query", "format": "json", "redirects": 1, "prop": "pageprops", "ppprop": "wikibase_item",
+             "titles": "|".join(chunk)})
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60) as r:
+                d = json.load(r)["query"]
+        except (OSError, ValueError, KeyError) as e:
+            print("  Wikipedia 失敗:", e, file=sys.stderr)
+            time.sleep(30)
+            continue
+        alias = {x["from"]: x["to"] for x in d.get("normalized", [])}
+        redir = {x["from"]: x["to"] for x in d.get("redirects", [])}
+        pages = {pg.get("title"): pg for pg in d.get("pages", {}).values()}
+        for t in chunk:
+            a = alias.get(t, t)
+            q = pages.get(redir.get(a, a), {}).get("pageprops", {}).get("wikibase_item")
+            if q:
+                for full in titles[t]:
+                    qid_of.setdefault(full, q)
+        time.sleep(3)
+    found = {}
+    qs = sorted(set(qid_of.values()))
+    for i in range(0, len(qs), 150):
+        rows = sparql('SELECT ?p ?ja WHERE { VALUES ?p { %s } ?p wdt:P106 ?job. FILTER(?job IN (wd:Q628099, wd:Q937857)) '
+                      '?p rdfs:label ?ja FILTER(lang(?ja) = "ja") }' % " ".join("wd:" + q for q in qs[i:i + 150]))
+        ja_of = {b["p"]["value"].rsplit("/", 1)[1]: re.sub(r"\s*[(（].*?[)）]\s*$", "", b["ja"]["value"]).strip() for b in rows or []}
+        for full, q in qid_of.items():
+            if q in ja_of:
+                found[full] = ja_of[q].replace("=", "＝")
+        time.sleep(1)
+    return found
+
+
+def normalize_coaches(lst):
+    """API-Football の監督の在任期間を整える。
+    ・前任者の在任中（退任の30日以上前）に始まった退任日なしの記録は、下部組織などの誤登録とみなして除く
+    ・退任日が無い監督は、次の監督の就任日で区切る（est: 推定）"""
+    lst = sorted(lst, key=lambda c: c["from"] or "")
+    def minus30(d):
+        return (datetime.strptime(d, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
+    keep = [c for c in lst if c["to"] or not any(
+        k is not c and k["to"] and k["from"] <= c["from"] and c["from"] < minus30(k["to"]) for k in lst)]
+    for i, c in enumerate(keep):
+        if not c["to"]:
+            later = [k for k in keep[i + 1:] if k["from"] > c["from"]]
+            if later:
+                c["to"], c["est"] = later[0]["from"], True
+    return keep
+
+
+def update_coaches(teams):
+    """API-Football の監督データ（就任日・退任日つき）を、チームごとに週1回取り直して data/coaches.json に保存する。
+    写真の取得と同じ無料枠（1日90回まで）を分け合う。"""
+    key = os.environ.get("AF_KEY")
+    if not key:
+        return
+    ph = load("photos.json", {"teams": {}, "players": {}})
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    quota = ph.get("_quota", {})
+    if quota.get("day") != today:
+        quota = {"day": today, "used": 0}
+    co = load("coaches.json", {"teams": {}, "ja": {}})
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    order = sorted((co["teams"].get(tid, {}).get("checked", ""), tid) for tid, v in ph["teams"].items() if v.get("af"))
+    for checked, tid in order:
+        if checked and checked > week_ago:
+            continue
+        if quota["used"] >= AF_DAILY_LIMIT:
+            break
+        quota["used"] += 1
+        af = ph["teams"][tid]["af"]
+        res = af_get("/coachs?team=%s" % af, key)
+        if res is None:
+            break
+        lst = []
+        for c in res:
+            full = " ".join(x for x in (c.get("firstname"), c.get("lastname")) if x) or c.get("name")
+            for job in c.get("career", []):
+                if str(job.get("team", {}).get("id")) == str(af):
+                    lst.append({"id": c.get("id"), "n": c.get("name"), "full": full, "nat": c.get("nationality") or "",
+                                "photo": c.get("photo") or "", "from": job.get("start") or "", "to": job.get("end") or ""})
+        for c in lst:
+            c["dn"] = display_coach_name(c)
+        co["teams"][tid] = {"checked": today, "list": normalize_coaches(lst)}
+    # 日本語名（まだ無い人だけ）
+    todo = {c["full"]: c for t in co["teams"].values() for c in t["list"] if c["full"] not in co["ja"]}
+    if todo:
+        co["ja"].update(coach_ja(list(todo.values())))
+    with open(os.path.join(NAMES, "coaches_ja.json"), encoding="utf-8") as f:  # 手で指定した名前を優先
+        co["ja"].update({k: v for k, v in json.load(f).items() if not k.startswith("_")})
+    ph["_quota"] = quota
+    save("photos.json", ph)
+    save("coaches.json", co)
+    print("  監督:", len(co["teams"]), "チーム / API-Football 本日", quota["used"], "回")
+
+
 def main():
     with_rosters = "--rosters" in sys.argv
     teams = load("teams.json", {})
@@ -1082,6 +1198,7 @@ def main():
     update_jp_highlights(teams, full="--full-highlights" in sys.argv)
     update_highlights(teams)
     if with_rosters:
+        update_coaches(teams)
         update_photos(teams)
         update_wiki_photos()
         update_photo_credits()

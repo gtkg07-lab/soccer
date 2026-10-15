@@ -246,3 +246,4 @@ summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
 .pl .nm { margin-top: 1px; }
 .ratenote { margin: 4px 0 0; }
 .plist a.p, .plist a.p * { text-decoration: none; }
+.coachline { margin-top: 6px; font-size: 11px; }
