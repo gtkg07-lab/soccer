@@ -174,12 +174,58 @@ def fetch_standings(comp, year):
     return groups
 
 
+SUMMARY_VERSION = 2  # 2: 選手ごとの成績・出場時間・簡易評価を追加
+STAT_KEYS = {"totalGoals": "g", "goalAssists": "a", "totalShots": "sh", "shotsOnTarget": "sot", "saves": "sv",
+             "goalsConceded": "gc", "yellowCards": "yc", "redCards": "rc", "ownGoals": "og",
+             "foulsCommitted": "fc", "foulsSuffered": "fs", "offsides": "off"}
+
+
+def minute_of(clock):
+    """"83'" や "90'+4'" を分（整数）にする。"""
+    m = re.match(r"(\d+)", clock or "")
+    return int(m.group(1)) if m else None
+
+
+def role_of(pos):
+    """ポジションの略号を GK / DF / MF / FW に分ける。"""
+    if pos == "G":
+        return "G"
+    if re.match(r"^(CD|SW|LB|RB|LWB|RWB|D)", pos or ""):
+        return "D"
+    if re.match(r"^(F|CF|LF|RF|LW|RW|ST|S)", pos or ""):
+        return "F"
+    return "M"
+
+
+def rating(pl, role, result, clean):
+    """アプリ独自の簡易評価（6.0基準・3.0〜10.0）。ESPN で取れる数字だけで計算する。
+    計算式は画面の「評価について」にも載せている。"""
+    st, mins = pl.get("s", {}), pl.get("min", 0)
+    if mins < 10 and not any(st.get(k) for k in ("g", "a", "rc", "og")):
+        return None  # 出場10分未満で目立った記録が無い選手は評価しない
+    w = min(mins, 90) / 90  # 出場時間が短いほど、勝敗・無失点などの影響を小さくする
+    r = 6.0
+    r += 1.0 * st.get("g", 0) + 0.7 * st.get("a", 0)
+    r += 0.2 * max(st.get("sot", 0) - st.get("g", 0), 0) + 0.05 * max(st.get("sh", 0) - st.get("sot", 0), 0)
+    r += 0.25 * st.get("sv", 0)
+    r -= {"G": 0.4, "D": 0.25, "M": 0.1, "F": 0.0}[role] * st.get("gc", 0)
+    if clean and mins >= 60:
+        r += {"G": 0.8, "D": 0.6, "M": 0.2, "F": 0.0}[role]
+    r -= 0.3 * st.get("yc", 0) + 1.5 * st.get("rc", 0) + 1.0 * st.get("og", 0)
+    r -= 0.05 * st.get("fc", 0) + 0.05 * st.get("off", 0)
+    r += 0.05 * st.get("fs", 0)
+    r += {"w": 0.3, "d": 0.0, "l": -0.2}[result] * w
+    return round(max(3.0, min(10.0, r)), 1)
+
+
 def slim_summary(comp, year, m, d):
-    out = {"id": m["id"], "comp": comp["id"], "y": year, "final": m["s"] == "post"}
+    out = {"id": m["id"], "comp": comp["id"], "y": year, "final": m["s"] == "post", "v": SUMMARY_VERSION}
     info = d.get("gameInfo", {})
     out["venue"] = (info.get("venue") or {}).get("fullName", "")
     out["att"] = info.get("attendance")
     sides = {}
+    period = (d.get("header", {}).get("competitions") or [{}])[0].get("status", {}).get("period", 2)
+    full = 120 if (period or 2) > 2 else 90
     for r in d.get("rosters", []):
         players = []
         for p in r.get("roster", []):
@@ -189,13 +235,39 @@ def slim_summary(comp, year, m, d):
                 "pos": (p.get("position") or {}).get("abbreviation", ""),
                 "st": bool(p.get("starter")), "fp": p.get("formationPlace"),
             }
+            if a.get("id"):
+                pl["id"] = a["id"]
             if p.get("subbedIn"):
                 pl["in"] = True
             if p.get("subbedOut"):
                 pl["out"] = True
+            st = {STAT_KEYS[x["name"]]: int(x.get("value") or 0) for x in p.get("stats", [])
+                  if x.get("name") in STAT_KEYS and x.get("value")}
+            if st:
+                pl["s"] = st
+            # 出場時間：交代の時刻から計算（延長戦なら120分）
+            subs = [minute_of(x.get("clock", {}).get("displayValue")) for x in p.get("plays", []) if x.get("substitution")]
+            subs = [x for x in subs if x is not None]
+            if pl["st"]:
+                pl["min"] = min(subs[0], full) if p.get("subbedOut") and subs else full
+            elif p.get("subbedIn") and subs:
+                pl["min"] = max(full - subs[0], 1) if not p.get("subbedOut") or len(subs) < 2 else subs[1] - subs[0]
             players.append(pl)
         sides[r.get("homeAway")] = {"form": r.get("formation", ""), "players": players}
     out["lineups"] = sides
+    # 簡易評価（終わった試合のみ）
+    if m["s"] == "post" and m.get("h") and m.get("a"):
+        hs, as_ = to_int(m["h"].get("sc")) or 0, to_int(m["a"].get("sc")) or 0
+        for ha, mine, opp in (("home", hs, as_), ("away", as_, hs)):
+            res = "w" if mine > opp else "l" if mine < opp else "d"
+            for pl in sides.get(ha, {}).get("players", []):
+                if pl.get("min"):
+                    r = rating(pl, role_of(pl["pos"] if pl["st"] else ""), res, opp == 0)
+                    if r is not None:
+                        pl["r"] = r
+        rated = [pl for side in sides.values() for pl in side["players"] if pl.get("r") is not None]
+        if rated:
+            max(rated, key=lambda pl: pl["r"])["motm"] = True
     stats = {}
     for t in d.get("boxscore", {}).get("teams", []):
         ha = t.get("homeAway") or ("home" if t["team"]["id"] == m["h"]["id"] else "away")
@@ -888,7 +960,7 @@ def main():
                     continue
                 path = "m/%s.json" % m["id"]
                 old = load(path)
-                if old and old.get("final"):
+                if old and old.get("final") and old.get("v") == SUMMARY_VERSION:
                     continue
                 d = get("%s/%s/summary?event=%s" % (SITE, comp["slug"], m["id"]))
                 if d:

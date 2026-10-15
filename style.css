@@ -205,7 +205,6 @@ table.st td.pts { font-weight: 700; }
 .av.none, .pf.none { background: var(--line) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%239ca3af'%3E%3Ccircle cx='12' cy='9' r='4.5'/%3E%3Cpath d='M3 23c0-5 4-8 9-8s9 3 9 8z'/%3E%3C/svg%3E") center/80% no-repeat; }
 .pl .face { position: relative; }
 .pf { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; object-position: top; background: #fff; border: 2px solid #fff; display: block; }
-.pl .face b { position: absolute; right: -6px; bottom: -2px; background: #111; color: #fff; font-size: 9px; border-radius: 8px; padding: 0 4px; line-height: 14px; }
 
 /* 写真のクレジット表示 */
 #toast { position: fixed; left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto;
@@ -234,3 +233,16 @@ details { margin-top: 10px; }
 summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
 .scorers a { text-decoration: none; }
 .plist .grow { text-align: left; }
+
+/* 簡易評価 */
+.rate { display: inline-block; min-width: 30px; text-align: center; font-size: 11px; font-weight: 800; border-radius: 8px; padding: 0 5px; line-height: 17px; color: #111; flex: none; }
+.r8 { background: #15803d; color: #fff; } .r7 { background: #4ade80; } .r65 { background: #bbf7d0; }
+.r6 { background: #fde68a; } .r5 { background: #fdba74; } .r4 { background: #f87171; color: #fff; }
+.pl .rate { margin-top: -7px; position: relative; z-index: 2; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.pl .face { position: relative; }
+.pl .face .num { width: 40px; height: 40px; font-size: 15px; }
+.pl .subout { position: absolute; left: -8px; top: -4px; width: 16px; height: 16px; border-radius: 50%; background: #fecaca; color: #991b1b; font-size: 11px; font-style: normal; font-weight: 800; display: grid; place-items: center; }
+.pl .ic { position: absolute; right: -14px; top: -4px; font-size: 11px; white-space: nowrap; }
+.pl .nm { margin-top: 1px; }
+.ratenote { margin: 4px 0 0; }
+.plist a.p, .plist a.p * { text-decoration: none; }

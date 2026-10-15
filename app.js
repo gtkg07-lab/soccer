@@ -450,6 +450,19 @@ function formationRows(players, form) {
   return rows;
 }
 let lineupSide = 'home';
+// 簡易評価の表示（色は評価の高さで変える）
+const plink = p => p.id ? `#/p/${p.id}` : `#/pn/${encodeURIComponent(p.n)}`;
+const rateClass = r => r >= 8 ? 'r8' : r >= 7 ? 'r7' : r >= 6.5 ? 'r65' : r >= 6 ? 'r6' : r >= 5 ? 'r5' : 'r4';
+const rateChip = p => p.r != null ? `<span class="rate ${rateClass(p.r)}">${p.motm ? '★' : ''}${p.r.toFixed(1)}</span>` : '';
+const RATE_NOTE = `<details class="ratenote"><summary>評価について（アプリ独自の簡易評価）</summary><div class="explain" style="padding:8px 0 0">
+  ESPN で取れる記録だけを使った、このアプリ独自の評価です（FotMob や SofaScore の評価とは異なります）。6.0 を基準に、
+  ゴール +1.0、アシスト +0.7、枠内シュート +0.2、枠外シュート +0.05、セーブ +0.25、
+  失点（GK −0.4・DF −0.25・MF −0.1）、無失点で60分以上出場（GK +0.8・DF +0.6・MF +0.2）、
+  イエロー −0.3、レッド −1.5、オウンゴール −1.0、ファウル −0.05、被ファウル +0.05、オフサイド −0.05、
+  勝利 +0.3・敗戦 −0.2（出場時間に比例）で計算し、3.0〜10.0 に収めます。
+  出場10分未満で目立った記録が無い選手は評価しません。★はその試合の最高評価。パスや守備の記録が無いため、守備的な選手は 6 点前後に集まりやすくなります。
+</div></details>`;
+
 function lineupHtml(m, d) {
   const side = d.lineups[lineupSide] ? lineupSide : 'home';
   const L = d.lineups[side];
@@ -470,17 +483,18 @@ function lineupHtml(m, d) {
   const rows = formationRows(L.players, L.form);
   let dots = '';
   rows.forEach((row, ri) => {
-    const yPos = 92 - ri * (84 / Math.max(rows.length - 1, 1));
+    const yPos = 90 - ri * (78 / Math.max(rows.length - 1, 1)); // 上下の端で写真が切れないよう余白をとる
     row.forEach((p, pi) => {
       const x = (pi + 1) / (row.length + 1) * 100;
-      dots += `<a class="pl" href="#/pn/${encodeURIComponent(p.n)}" style="left:${x}%;top:${yPos}%">${PHOTOS[p.n] ? `<div class="face">${avatar(p, "pf")}<b>${esc(p.num)}</b></div>` : `<div class="num">${esc(p.num)}</div>`}<div class="nm">${esc(pnShort(p.n))}${p.out ? ' ↓' : ''}</div><span class="ic">${marks(p.n)}</span></a>`;
+      dots += `<a class="pl" href="${plink(p)}" style="left:${x}%;top:${yPos}%"><div class="face">${PHOTOS[p.n] ? avatar(p, "pf") : `<div class="num">${esc(p.num)}</div>`}${p.out ? '<i class="subout">↓</i>' : ''}<span class="ic">${marks(p.n)}</span></div>${rateChip(p)}<div class="nm">${esc(p.num)} ${esc(pnShort(p.n))}</div></a>`;
     });
   });
   const bench = L.players.filter(p => !p.st);
   return `<div class="tabs" id="side"><button data-side="home" class="${side === 'home' ? 'on' : ''}">${esc(team(m.h.id).s)}</button><button data-side="away" class="${side === 'away' ? 'on' : ''}">${esc(team(m.a.id).s)}</button></div>
     <div class="formation">${logo(tid)}<b>${esc(L.form || '')}</b></div>
     <div class="pitch">${dots}</div>
-    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<a class="p" href="#/pn/${encodeURIComponent(p.n)}"><span class="no">${esc(p.num)}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))} ${marks(p.n)}</span>${p.in ? '<span class="x">↑ 途中出場</span>' : ''}</a>`).join('')}</div>`;
+    ${L.players.some(p => p.r != null) ? RATE_NOTE : ''}
+    <h3>ベンチ</h3><div class="card plist">${bench.map(p => `<a class="p" href="${plink(p)}"><span class="no">${esc(p.num)}</span>${avatar(p)}<span class="grow">${esc(pn(p.n))} ${marks(p.n)}${p.in ? `<span class="x"> ↑途中出場${p.min ? `（${p.min}分）` : ''}</span>` : ''}</span>${rateChip(p)}</a>`).join('')}</div>`;
 }
 function bindLineupSwitch(m, d) {
   app.querySelectorAll('#side button').forEach(b => b.addEventListener('click', () => {
