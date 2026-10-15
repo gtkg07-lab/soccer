@@ -27,7 +27,7 @@ COMPETITIONS = [
     {"id": "premier", "slug": "eng.1", "name": "プレミアリーグ", "type": "league", "first": 2025},
     {"id": "laliga", "slug": "esp.1", "name": "ラ・リーガ", "type": "league", "first": 2025},
     {"id": "ligue1", "slug": "fra.1", "name": "リーグ・アン", "type": "league", "first": 2025},
-    {"id": "ucl", "slug": "uefa.champions", "name": "チャンピオンズリーグ", "type": "ucl", "first": 2025},
+    {"id": "ucl", "slug": "uefa.champions", "name": "チャンピオンズリーグ", "type": "ucl", "first": 2024},
     {"id": "unl", "slug": "uefa.nations", "name": "UEFAネーションズリーグ", "type": "unl", "first": 2024},
 ]
 
@@ -457,7 +457,7 @@ def update_jp_highlights(teams, full=False):
     def cands(tid):
         t, ja = teams.get(tid, {}), names_ja.get(tid) or []
         return [x for x in [*ja, t.get("n"), t.get("s")] if x]
-    stop = datetime(2025, 7, 1, tzinfo=timezone.utc)
+    stop = datetime(2024, 7, 1, tzinfo=timezone.utc)  # CL 24/25 から
     found = 0
     for ch_id, ch_name in JP_CHANNELS.items():
         token, pages = None, 0
