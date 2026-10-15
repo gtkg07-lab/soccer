@@ -398,12 +398,27 @@ JP_CHANNELS = {
     "UCoFLB_Gw_AoxUuuzKjXrc_Q": "DAZN Japan",              # ラ・リーガ・リーグアン・ネーションズリーグ
     "UCMjvvElkdLRTgcTKklAUkSw": "U-NEXT フットボール",      # プレミアリーグ・ラ・リーガ
 }
-JP_SKIP = re.compile(r"ピッチレベル|ゴール集|プレビュー|インタビュー|会見|LIVE|ライブ|配信|見どころ|予想|#shorts", re.I)
-JP_LONG = re.compile(r"ロング|フルハイライト|拡大", re.I)
+JP_SKIP = re.compile(r"ピッチレベル|ゴール集|プレビュー|インタビュー|会見|LIVE|ライブ|配信|見どころ|予想|デイリー|#shorts"
+                     r"|女子|WSL|Women|ユース|UYL|U-?\d\d", re.I)  # 女子・ユースは同名クラブがあるので除外
+JP_LONG = re.compile(r"ロングハイライト|フルハイライト|拡大版", re.I)
+JP_DATE = re.compile(r"(20\d\d)/(\d{1,2})/(\d{1,2})")  # 「2025/11/8」のような試合日
+JP_SEASON = re.compile(r"(20\d\d)[-/](\d\d)")  # 「2025-26」「25/26」のようなシーズン表記
+JP_LEG = re.compile(r"([12])(?:st|nd)\s*leg", re.I)
 # タイトルに入る大会名（試合の大会と一致する動画だけを使う。AFCチャンピオンズリーグなどの取り違え防止）
 JP_COMP = {"premier": re.compile(r"プレミアリーグ"), "laliga": re.compile(r"ラ・?リーガ"), "ligue1": re.compile(r"リーグ・?アン"),
-           "ucl": re.compile(r"(?<!AFC)(?<!AFC )(UEFA)?チャンピオンズリーグ(?!エリート)"), "unl": re.compile(r"ネーションズリーグ")}
-JP_PAIR = re.compile(r"[【｜|]\s*([^【】｜|]+?)\s*(?:\s[vV][sS]?\.?\s|×)\s*([^【】｜|]+?)\s*(?=[｜|】])")
+           "ucl": re.compile(r"(?<!AFC)(?<!AFC )(UEFA)?チャンピオンズリーグ(?!エリート)|(?<![A-Za-z])CL\s?\d{4}"), "unl": re.compile(r"ネーションズリーグ")}
+JP_SEG = re.compile(r"[【】｜|／]")
+JP_VS = re.compile(r"(\S+?)\s*(?:\s[vV][sS]?\.?\s|×)\s*(\S+)")
+
+
+def jp_pairs(title):
+    """タイトルから「チームA vs チームB」を取り出す（【】で囲まれていない書き方にも対応）。"""
+    out = []
+    for seg in JP_SEG.split(title):
+        m = JP_VS.search(seg.strip())
+        if m:
+            out.append((m.group(1).split()[-1], m.group(2).split()[0]))
+    return out
 
 
 def jpnorm(s):
@@ -438,7 +453,7 @@ def update_jp_highlights(teams, full=False):
             for m in load(os.path.relpath(path, ROOT), []):
                 if m["s"] == "post" and m.get("h") and m.get("a"):
                     ko = datetime.strptime(m["d"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
-                    matches.append((ko, m, comp["id"]))
+                    matches.append((ko, m, comp["id"], int(path.split(os.sep)[-2])))
     def cands(tid):
         t, ja = teams.get(tid, {}), names_ja.get(tid) or []
         return [x for x in [*ja, t.get("n"), t.get("s")] if x]
@@ -462,20 +477,37 @@ def update_jp_highlights(teams, full=False):
                 oldest = pub
                 if "ハイライト" not in title or JP_SKIP.search(title):
                     continue
+                kind = "l" if JP_LONG.search(title) else "h"
+                leg = JP_LEG.search(title)
+                # ロングハイライトは試合の数週間後に出ることがあるので、60日まで照合する
+                # シーズンが書いてあれば、そのシーズンの試合と照合（数か月後に公開される動画にも対応）
+                window = timedelta(days=60 if kind == "l" else 5)
+                dm = JP_DATE.search(title)
+                day = datetime(int(dm.group(1)), int(dm.group(2)), int(dm.group(3)), tzinfo=timezone.utc) if dm else None
+                sm = JP_SEASON.search(title)
+                season = int(sm.group(1)) if sm and kind == "l" else None
                 best = None
-                for a, b in JP_PAIR.findall(title):
-                    for ko, m, cid in matches:
-                        if not (ko - timedelta(hours=3) <= pub <= ko + timedelta(days=5)) or not JP_COMP[cid].search(title):
+                for a, b in jp_pairs(title):
+                    for ko, m, cid, y in matches:
+                        if not JP_COMP[cid].search(title) or pub < ko - timedelta(hours=3):
                             continue
+                        if day is not None:
+                            # 試合日が書いてあれば、その日（日本時間なので前後1日）の試合だけ
+                            if abs((ko + timedelta(hours=9)).date() - day.date()) > timedelta(days=1):
+                                continue
+                        elif (y != season) if season else (pub > ko + window):
+                            continue
+                        if leg and m.get("leg") and str(m["leg"]) != leg.group(1):
+                            continue  # 第1戦・第2戦を取り違えない
                         ha = min(max(name_sim(a, c) for c in cands(m["h"]["id"])), max(name_sim(b, c) for c in cands(m["a"]["id"])))
                         ah = min(max(name_sim(a, c) for c in cands(m["a"]["id"])), max(name_sim(b, c) for c in cands(m["h"]["id"])))
-                        score = max(ha, ah)
-                        if score >= 0.6 and (best is None or score > best[0]):
+                        # ホーム・アウェイの順に書かれているものを優先し、同点なら公開日に近い試合
+                        score = (max(ha, ah), ha >= ah, ko)
+                        if score[0] >= 0.6 and (best is None or score > best[0]):
                             best = (score, m)
                 if not best:
                     continue
                 m = best[1]
-                kind = "l" if JP_LONG.search(title) else "h"
                 e = hl.setdefault(m["id"], {})
                 cur = e.get(kind)
                 if not cur or not cur.get("jp"):
