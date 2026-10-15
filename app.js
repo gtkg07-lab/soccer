@@ -86,7 +86,8 @@ function linkLegs(list) {
   }
   return list;
 }
-const legLabel = m => (m.leg ? `第${m.leg}戦` : '');
+// 第1戦は赤、第2戦は青の印
+const legBadge = m => (m.leg ? `<span class="leg leg${m.leg}">第${m.leg}戦</span>` : '');
 let INDEX = null, TEAMS = {}, NAMES = { teams: {}, players: {} }, PHOTOS = {}, CREDIT = {};
 // 日本語名があれば使う（en は YouTube 検索用に英語名を残す）
 const team = id => {
@@ -132,7 +133,6 @@ function statusText(m) {
 function stageText(m) {
   let s = STAGE[m.st] || m.st;
   if (m.g) s = groupJa(m.g);
-  if (m.leg) s += ` 第${m.leg}戦`;
   return s;
 }
 function groupJa(g) {
@@ -146,9 +146,9 @@ function matchRow(m, cid, y, opts = {}) {
   const aw = m.s === 'post' && (m.a.w || (m.adv && m.adv === m.a.id));
   const live = m.s === 'in';
   const pen = m.h.pen != null ? `<small>PK ${m.h.pen}-${m.a.pen}</small>` : '';
-  const sub = opts.compTag ? [SHORT[cid], legLabel(m)].filter(Boolean).join(' ') : opts.stage ? stageText(m) : '';
+  const sub = opts.compTag ? SHORT[cid] : opts.stage ? stageText(m) : '';
   return `<a class="match" href="#/m/${cid}/${y}/${m.id}">
-    <div class="time ${live ? 'live' : ''}">${esc(statusText(m))}${sub ? `<div class="tag">${esc(sub)}</div>` : ''}</div>
+    <div class="time ${live ? 'live' : ''}">${esc(statusText(m))}${sub || m.leg ? `<div class="tag">${esc(sub)}${(opts.compTag || opts.stage) && m.leg ? ` ${legBadge(m)}` : ''}</div>` : ''}</div>
     <div class="team home ${hw ? 'win' : ''}"><span>${esc(team(m.h.id).s)}</span>${logo(m.h.id)}</div>
     <div class="score ${pre ? 'pre' : ''}">${pre ? 'vs' : `${m.h.sc}-${m.a.sc}`}${pen}${m.agg ? `<small>合計 ${m.agg.h}-${m.agg.a}</small>` : ''}</div>
     <div class="team ${aw ? 'win' : ''}">${logo(m.a.id)}<span>${esc(team(m.a.id).s)}</span></div>
@@ -362,7 +362,7 @@ function tieHtml(c, y, legs) {
   }
   const row = (id, g) => `<div class="row ${adv === id ? 'adv' : ''}">${logo(id)}<span><a href="#/t/${id}">${esc(team(id).s)}</a></span><b class="agg">${played ? g : ''}</b>${adv === id ? '<em class="badge">勝ち上がり</em>' : ''}</div>`;
   return `<div class="tie">${row(A, ga)}${row(B, gb)}
-    <div class="legs">${legs.map(m => `<a href="#/m/${c.id}/${y}/${m.id}">${m.leg ? `第${m.leg}戦 ` : ''}${fmtDay(m.d)} ${m.s === 'pre' ? fmtTime(m.d) : `${esc(team(m.h.id).ab)} ${m.h.sc}-${m.a.sc} ${esc(team(m.a.id).ab)}${m.h.pen != null ? `（PK ${m.h.pen}-${m.a.pen}）` : ''}`}</a>`).join('')}</div></div>`;
+    <div class="legs">${legs.map(m => `<a href="#/m/${c.id}/${y}/${m.id}">${legBadge(m)} ${fmtDay(m.d)} ${m.s === 'pre' ? fmtTime(m.d) : `${esc(team(m.h.id).ab)} ${m.h.sc}-${m.a.sc} ${esc(team(m.a.id).ab)}${m.h.pen != null ? `（PK ${m.h.pen}-${m.a.pen}）` : ''}`}</a>`).join('')}</div></div>`;
 }
 
 function gamesHtml(c, y, matches) {
@@ -401,7 +401,7 @@ async function viewMatch(cid, y, id, tab) {
   const advId = m.adv || (m.agg && m.s === 'post' && m.agg.h !== m.agg.a ? (m.agg.h > m.agg.a ? m.h.id : m.a.id) : null);
   const legBox = o ? `<div class="legbox">
       ${m.agg ? `<div><b>2試合合計 ${m.agg.h} - ${m.agg.a}</b>${m.h.pen != null ? `（PK ${m.h.pen}-${m.a.pen}）` : ''}${advId ? ` ・ <b>${esc(team(advId).s)}</b> が勝ち上がり` : m.s === 'in' ? '（試合中）' : ''}</div>` : ''}
-      <a href="#/m/${cid}/${y}/${o.id}">${legLabel(o)}：${fmtDay(o.d)} ${o.s === 'pre' ? `${fmtTime(o.d)} キックオフ` : `${esc(team(o.h.id).s)} ${o.h.sc}-${o.a.sc} ${esc(team(o.a.id).s)}`} ›</a>
+      <a href="#/m/${cid}/${y}/${o.id}">${legBadge(o)} ${fmtDay(o.d)} ${o.s === 'pre' ? `${fmtTime(o.d)} キックオフ` : `${esc(team(o.h.id).s)} ${o.h.sc}-${o.a.sc} ${esc(team(o.a.id).s)}`} ›</a>
     </div>` : '';
   const big = m.s === 'pre'
     ? `<div class="big" style="font-size:20px">${fmtTime(m.d)}<small>キックオフ</small></div>`
@@ -418,7 +418,7 @@ async function viewMatch(cid, y, id, tab) {
   app.innerHTML = `
     <button class="back" onclick="history.back()">‹ 戻る</button>
     <div class="card mhead">
-      <div class="meta"><a href="#/c/${cid}/${y}">${esc(c.name)}</a> · ${esc(stageText(m))}</div>
+      <div class="meta"><a href="#/c/${cid}/${y}">${esc(c.name)}</a> · ${esc(stageText(m))} ${legBadge(m)}</div>
       <div class="meta">${fmtFull(m.d)}${d && d.venue ? ` · ${esc(d.venue)}` : ''}</div>
       <div class="teams">
         <a href="#/t/${m.h.id}">${logo(m.h.id, 'xl')}${esc(H.s)}</a>${big}<a href="#/t/${m.a.id}">${logo(m.a.id, 'xl')}${esc(A.s)}</a>

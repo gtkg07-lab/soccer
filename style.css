@@ -251,3 +251,5 @@ summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
 .lcoach .av { width: 28px; height: 28px; }
 .legbox { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--bg); font-size: 12px; display: grid; gap: 4px; }
 .legbox a { color: var(--accent); font-weight: 600; }
+.leg { display: inline-block; font-size: 10px; font-weight: 700; color: #fff; border-radius: 4px; padding: 0 5px; line-height: 16px; white-space: nowrap; }
+.leg1 { background: #dc2626; } .leg2 { background: #2563eb; }
