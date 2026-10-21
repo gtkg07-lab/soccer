@@ -439,7 +439,14 @@ async function viewMatch(cid, y, id, tab) {
 const XG_ROWS = [['xg', 'ゴール期待値（xG）'], ['npxg', 'xG（PKを除く）'], ['xgot', '枠内シュートのxG'], ['xa', 'アシスト期待値（xA）']];
 function xgHtml(d) {
   const x = d.xg;
-  if (!x) return '';
+  if (!x) {
+    // 公式xGが無い試合は、アプリ独自の推定xG
+    const e = d.xgEst;
+    if (!e) return '';
+    const h = e.home || 0, w = e.away || 0, max = Math.max(h + w, 0.01);
+    return `<div class="stat xgmain"><div class="lbl"><b>${h.toFixed(2)}</b><span>推定xG（アプリ独自）</span><b>${w.toFixed(2)}</b></div>
+      <div class="bars"><div class="h"><i style="width:${h / max * 100}%"></i></div><div class="a"><i style="width:${w / max * 100}%"></i></div></div></div>`;
+  }
   return XG_ROWS.filter(([k]) => x.home[k] != null || x.away[k] != null).map(([k, label]) => {
     const h = x.home[k] || 0, w = x.away[k] || 0, max = Math.max(h + w, 0.01);
     return `<div class="stat${k === 'xg' ? ' xgmain' : ''}"><div class="lbl"><b>${h.toFixed(2)}</b><span>${label}</span><b>${w.toFixed(2)}</b></div>
@@ -466,8 +473,9 @@ function statsHtml(d) {
       <div class="bars"><div class="h"><i style="width:${h / max * 100}%"></i></div><div class="a"><i style="width:${w / max * 100}%"></i></div></div></div>`;
   }).join('');
   const xg = xgHtml(d);
-  const note = xg ? '<p class="note">xG：ESPN（Opta）提供のデータ。シュートの位置や状況から、そのシュートが決まる確率を足し合わせた値です。</p>'
-    : '<p class="note">xG（ゴール期待値）は 26/27 シーズン以降のプレミア・ラ・リーガ・リーグ・アン・CL の試合で表示されます。</p>';
+  const note = d.xg ? '<p class="note">xG：ESPN（Opta）提供のデータ。シュートの位置や状況から、そのシュートが決まる確率を足し合わせた値です。</p>'
+    : d.xgEst ? '<p class="note">推定xG：この試合には ESPN（Opta）の xG が無いため、試合実況に記録された全シュートの位置（ゴールまでの距離・角度）・ヘディングかどうか・カウンターやスルーパスからか、などをもとにアプリ独自に計算した値です（PKは1本0.78）。今季の公式xGと比べた検証では、1チームあたり平均±0.3程度の差があります。</p>'
+    : '';
   return rows || xg ? `<div class="card">${xg}${rows}</div>${note}` : '<p class="empty">スタッツはありません</p>';
 }
 

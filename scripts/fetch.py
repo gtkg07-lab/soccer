@@ -174,10 +174,72 @@ def fetch_standings(comp, year):
     return groups
 
 
-SUMMARY_VERSION = 2  # 2: 選手ごとの成績・出場時間・簡易評価を追加
+SUMMARY_VERSION = 3  # 2: 選手ごとの成績・出場時間・簡易評価 3: 推定xG
 STAT_KEYS = {"totalGoals": "g", "goalAssists": "a", "totalShots": "sh", "shotsOnTarget": "sot", "saves": "sv",
              "goalsConceded": "gc", "yellowCards": "yc", "redCards": "rc", "ownGoals": "og",
              "foulsCommitted": "fc", "foulsSuffered": "fs", "offsides": "off"}
+
+
+# ===== 推定xG（アプリ独自）=====
+# ESPN（Opta）の xG が無い試合（25/26 以前・ネーションズリーグ）用。
+# 試合実況のシュートの位置（座標）・種類から、ロジスティック回帰で1本ずつ決定率を出して合計する。
+# 重みは 26/27 の 7,121 本のシュート（PK除く）で学習。公式xGとの比較で、相関0.90・1チームあたり平均誤差±0.30。
+XG_EST_W = [-0.4748, -1.2044, 0.692, -0.7058, -0.0502, 0.9184, 0.051, -0.5404, 0.429]
+XG_PEN = 0.78  # PK 1本の xG
+SHOT_TEXT = re.compile(r"^(Attempt (saved|missed|blocked)|Goal!)")
+ZONE_DIST = {"six yard box": 4.5, "very close range": 4.0, "centre of the box": 11.5, "left side of the box": 12.5,
+             "right side of the box": 12.5, "difficult angle": 9.0, "outside the box": 24.0, "long range": 32.0,
+             "more than 35 yards": 36.0, "more than 40 yards": 42.0}
+
+
+def shot_geom(p, text):
+    """ゴールまでの距離（m）とゴールの見える角度。座標は形式が2種類ある（今季：0〜100で100が相手ゴール、
+    昨季以前：ゴールラインからの距離÷52.5m）。座標が無ければ実況の位置表現から推定。"""
+    import math
+    x, y = p.get("fieldPositionX"), p.get("fieldPositionY")
+    dx = dy = None
+    if x is not None and y is not None and (x > 0 or y > 0):
+        if x > 1.5 or y > 1.5:
+            x, y = x / 100, y / 100
+            dx, dy = (1 - x) * 105, (y - 0.5) * 68
+        elif x >= 0.5:
+            dx, dy = (1 - x) * 105, (y - 0.5) * 68
+        else:
+            dx, dy = x * 52.5, (y - 0.5) * 68
+    if dx is None:
+        dx, dy = next((v for k, v in ZONE_DIST.items() if k in text), 18.0), 0.0
+    dx = max(dx, 0.5)
+    a = math.atan2(7.32 * dx, dx * dx + dy * dy - (7.32 / 2) ** 2)
+    return math.hypot(dx, dy), a + math.pi if a < 0 else a
+
+
+def estimate_xg(d):
+    """試合実況から両チームの推定xGを出す。{"home": 1.23, "away": 0.45}"""
+    import math
+    side_of = {t["team"].get("displayName"): t.get("homeAway") for t in d.get("boxscore", {}).get("teams", [])}
+    tot = {"home": 0.0, "away": 0.0}
+    n = 0
+    for c in d.get("commentary", []):
+        t = c.get("text", "")
+        if not SHOT_TEXT.match(t) or "own goal" in t.lower():
+            continue
+        p = c.get("play") or {}
+        team = (p.get("team") or {}).get("displayName") or (re.search(r"\(([^)]+)\)", t) or [None, None])[1]
+        side = side_of.get(team)
+        if side not in tot:
+            continue
+        lt = t.lower()
+        if "penalty" in lt.split(".")[0] or "converts the penalty" in lt or "penalty saved" in lt or "penalty missed" in lt:
+            tot[side] += XG_PEN
+        else:
+            dist, ang = shot_geom(p, t)
+            f = [1.0, dist / 10, ang, ("header" in lt) * 1.0, ("free kick" in lt and "direct" in lt) * 1.0,
+                 ("fast break" in lt) * 1.0, ("following a corner" in lt or "from a corner" in lt) * 1.0,
+                 ("cross" in lt) * 1.0, ("through ball" in lt) * 1.0]
+            z = sum(a * b for a, b in zip(XG_EST_W, f))
+            tot[side] += 1 / (1 + math.exp(-z))
+        n += 1
+    return {k: round(v, 2) for k, v in tot.items()} if n else None
 
 
 def minute_of(clock):
@@ -285,6 +347,9 @@ def slim_summary(comp, year, m, d):
             "team": (k.get("team") or {}).get("id"), "p": names,
         })
     out["events"] = evs
+    est = estimate_xg(d)
+    if est:
+        out["xgEst"] = est
     return out
 
 
