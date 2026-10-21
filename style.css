@@ -256,3 +256,5 @@ summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
 .top .left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .backbtn { background: rgba(255,255,255,.12); color: #fff; border: none; border-radius: 8px; padding: 5px 10px; font-size: 14px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .backbtn:active { background: rgba(255,255,255,.25); }
+.stat.xgmain .lbl b { font-size: 15px; }
+.stat.xgmain { background: var(--accent-soft); }

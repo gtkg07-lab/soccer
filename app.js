@@ -435,6 +435,18 @@ async function viewMatch(cid, y, id, tab) {
   bindLineupSwitch(m, d);
 }
 
+// xG（ゴール期待値）の行。ESPN（Opta）が提供している試合だけ
+const XG_ROWS = [['xg', 'ゴール期待値（xG）'], ['npxg', 'xG（PKを除く）'], ['xgot', '枠内シュートのxG'], ['xa', 'アシスト期待値（xA）']];
+function xgHtml(d) {
+  const x = d.xg;
+  if (!x) return '';
+  return XG_ROWS.filter(([k]) => x.home[k] != null || x.away[k] != null).map(([k, label]) => {
+    const h = x.home[k] || 0, w = x.away[k] || 0, max = Math.max(h + w, 0.01);
+    return `<div class="stat${k === 'xg' ? ' xgmain' : ''}"><div class="lbl"><b>${h.toFixed(2)}</b><span>${label}</span><b>${w.toFixed(2)}</b></div>
+      <div class="bars"><div class="h"><i style="width:${h / max * 100}%"></i></div><div class="a"><i style="width:${w / max * 100}%"></i></div></div></div>`;
+  }).join('');
+}
+
 function statsHtml(d) {
   const s = d.stats || {};
   const num = v => parseFloat(v) || 0;
@@ -453,7 +465,10 @@ function statsHtml(d) {
     return `<div class="stat"><div class="lbl"><b>${h}${unit}</b><span>${label}</span><b>${w}${unit}</b></div>
       <div class="bars"><div class="h"><i style="width:${h / max * 100}%"></i></div><div class="a"><i style="width:${w / max * 100}%"></i></div></div></div>`;
   }).join('');
-  return rows ? `<div class="card">${rows}</div>` : '<p class="empty">スタッツはありません</p>';
+  const xg = xgHtml(d);
+  const note = xg ? '<p class="note">xG：ESPN（Opta）提供のデータ。シュートの位置や状況から、そのシュートが決まる確率を足し合わせた値です。</p>'
+    : '<p class="note">xG（ゴール期待値）は 26/27 シーズン以降のプレミア・ラ・リーガ・リーグ・アン・CL の試合で表示されます。</p>';
+  return rows || xg ? `<div class="card">${xg}${rows}</div>${note}` : '<p class="empty">スタッツはありません</p>';
 }
 
 // ポジションの略号から「縦の位置（深さ）」と「左右」を推定して、フォーメーション通りに並べる

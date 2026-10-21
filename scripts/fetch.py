@@ -288,6 +288,27 @@ def slim_summary(comp, year, m, d):
     return out
 
 
+XG_FROM = 2026  # ESPN（Opta）の xG はこのシーズンから
+XG_KEYS = {"expectedGoals": "xg", "expectedGoalsNonPenalty": "npxg", "expectedGoalsOnTarget": "xgot", "expectedAssists": "xa"}
+
+
+def fetch_xg(comp, m):
+    """ESPN の詳細データ（チームごとの成績）から xG・PK除くxG・枠内シュートのxG・xA を取る。無ければ None。"""
+    out = {}
+    for side, key in (("home", "h"), ("away", "a")):
+        d = get("https://sports.core.api.espn.com/v2/sports/soccer/leagues/%s/events/%s/competitions/%s/competitors/%s/statistics"
+                % (comp["slug"], m["id"], m["id"], m[key]["id"]), retries=2)
+        vals = {}
+        for c in ((d or {}).get("splits") or {}).get("categories", []):
+            for st in c.get("stats", []):
+                if st.get("name") in XG_KEYS and st.get("value") is not None:
+                    vals[XG_KEYS[st["name"]]] = round(float(st["value"]), 2)
+        out[side] = vals
+    if not out["home"].get("xg") and not out["away"].get("xg"):
+        return None  # 値が無い・すべて0（データ未提供）
+    return out
+
+
 def fetch_roster(comp, team_id, teams):
     d = get("%s/%s/teams/%s/roster" % (SITE, comp["slug"], team_id))
     if not d or not d.get("athletes"):
@@ -1326,11 +1347,19 @@ def main():
                     continue
                 path = "m/%s.json" % m["id"]
                 old = load(path)
-                if old and old.get("final") and old.get("v") == SUMMARY_VERSION:
-                    continue
-                d = get("%s/%s/summary?event=%s" % (SITE, comp["slug"], m["id"]))
-                if d:
-                    save(path, slim_summary(comp, year, m, d))
+                if not (old and old.get("final") and old.get("v") == SUMMARY_VERSION):
+                    d = get("%s/%s/summary?event=%s" % (SITE, comp["slug"], m["id"]))
+                    if d:
+                        old = slim_summary(comp, year, m, d)
+                        save(path, old)
+                # xG（ゴール期待値）：ESPN が提供している 26/27 シーズン以降のクラブの大会だけ
+                if old and year >= XG_FROM and comp["id"] != "unl" and not old.get("xgDone"):
+                    xg = fetch_xg(comp, m)
+                    if xg:
+                        old["xg"] = xg
+                    if old.get("final"):
+                        old["xgDone"] = True
+                    save(path, old)
         print("  シーズン:", [s["label"] for s in seasons], "通信回数:", requests_made)
 
         if with_rosters and seasons:
