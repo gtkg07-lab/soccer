@@ -12,7 +12,18 @@ const STAGE = {
   'final': '決勝',
   'relegation-playoffs': '昇降格プレーオフ',
 };
-const SHORT = { premier: 'プレミア', laliga: 'ラ・リーガ', ligue1: 'リーグ・アン', ucl: 'CL', unl: 'ネーションズL' };
+const SHORT = { premier: 'プレミア', laliga: 'ラ・リーガ', ligue1: 'リーグ・アン', ucl: 'CL', unl: 'ネーションズL', jpn: '日本代表' };
+// 日本代表の試合の大会名・段階
+const LG_JA = { 'fifa.friendly': '国際親善試合', 'fifa.world': 'W杯', 'fifa.worldq.afc': 'W杯アジア予選', 'afc.asian.cup': 'アジアカップ',
+  'afc.cupq': 'アジアカップ予選', 'eaff.championship': 'E-1選手権' };
+const SUB_JA = { 'group-stage': 'グループステージ', 'round-of-32': 'ラウンド32', 'round-of-16': 'ラウンド16', 'quarterfinals': '準々決勝',
+  'semifinals': '準決勝', '3rd-place-match': '3位決定戦', 'final': '決勝', 'third-round': '3次予選', 'second-round': '2次予選' };
+// 一覧用の短い表記
+const LG_SHORT = { 'fifa.friendly': '親善試合', 'fifa.world': 'W杯', 'fifa.worldq.afc': 'W杯予選', 'afc.asian.cup': 'アジア杯',
+  'afc.cupq': 'アジア杯予選', 'eaff.championship': 'E-1' };
+const SUB_SHORT = { 'group-stage': 'GS', 'round-of-32': 'R32', 'round-of-16': 'R16', 'quarterfinals': '準々決勝',
+  'semifinals': '準決勝', '3rd-place-match': '3位決定戦', 'final': '決勝', 'third-round': '3次予選', 'second-round': '2次予選' };
+const isOff = m => ['STATUS_POSTPONED', 'STATUS_CANCELED', 'STATUS_ABANDONED'].includes(m.n); // 延期・中止
 const FLOW = {
   ucl: [
     { label: 'リーグ<br>フェーズ', stages: ['league-phase'], desc: '36チームが1つの順位表で8試合ずつ戦う。1〜8位はラウンド16へ、9〜24位はプレーオフへ、25位以下は敗退。' },
@@ -130,7 +141,11 @@ function statusText(m) {
   if (m.s === 'post') return m.n === 'STATUS_FINAL_PEN' || m.h.pen != null ? 'PK' : m.n === 'STATUS_FINAL_AET' ? '延長' : '終了';
   return fmtTime(m.d);
 }
-function stageText(m) {
+function stageText(m, short = false) {
+  if (m.lg) {
+    const [L, S] = short ? [LG_SHORT, SUB_SHORT] : [LG_JA, SUB_JA];
+    return [L[m.lg] || m.lgName || m.lg, m.lg === 'fifa.friendly' ? '' : S[m.sub] || ''].filter(Boolean).join(' ');
+  }
   let s = STAGE[m.st] || m.st;
   if (m.g) s = groupJa(m.g);
   return s;
@@ -141,12 +156,12 @@ function groupJa(g) {
 }
 
 function matchRow(m, cid, y, opts = {}) {
-  const pre = m.s === 'pre';
+  const pre = m.s === 'pre' || isOff(m);
   const hw = m.s === 'post' && (m.h.w || (m.adv && m.adv === m.h.id));
   const aw = m.s === 'post' && (m.a.w || (m.adv && m.adv === m.a.id));
   const live = m.s === 'in';
   const pen = m.h.pen != null ? `<small>PK ${m.h.pen}-${m.a.pen}</small>` : '';
-  const sub = opts.compTag ? SHORT[cid] : opts.stage ? stageText(m) : '';
+  const sub = opts.compTag ? SHORT[cid] : opts.stage ? stageText(m, true) : '';
   return `<a class="match" href="#/m/${cid}/${y}/${m.id}">
     <div class="time ${live ? 'live' : ''}">${esc(statusText(m))}${sub || m.leg ? `<div class="tag">${esc(sub)}${(opts.compTag || opts.stage) && m.leg ? ` ${legBadge(m)}` : ''}</div>` : ''}</div>
     <div class="team home ${hw ? 'win' : ''}"><span>${esc(team(m.h.id).s)}</span>${logo(m.h.id)}</div>
@@ -227,7 +242,7 @@ async function viewComp(cid, y, tab) {
   y = season.y;
   const [ms, st] = await Promise.all([load(`${cid}/${y}/matches.json`), load(`${cid}/${y}/standings.json`)]);
   const matches = ms || [];
-  const tabList = c.type === 'league'
+  const tabList = c.type === 'team' ? [['games', '試合']] : c.type === 'league'
     ? [['table', '順位表'], ['games', '日程・結果']]
     : [['table', c.type === 'unl' ? 'グループ' : '順位表'], ['ko', '勝ち上がり'], ['games', '日程・結果']];
   if (!tab || !tabList.some(t => t[0] === tab)) tab = tabList[0][0];
@@ -255,7 +270,25 @@ async function viewComp(cid, y, tab) {
 }
 
 function flowHtml(c, matches) {
-  const total = matches.length, done = matches.filter(m => m.s === 'post').length;
+  const total = matches.length, done = matches.filter(m => m.s === 'post' && !isOff(m)).length;
+  if (c.type === 'team') {
+    // 代表チーム：シーズンの戦績
+    const tid = c.team;
+    let w = 0, dr = 0, l = 0, gf = 0, ga = 0;
+    for (const m of matches) {
+      if (m.s !== 'post' || isOff(m)) continue;
+      const [me, op] = m.h.id === tid ? [+m.h.sc, +m.a.sc] : [+m.a.sc, +m.h.sc];
+      gf += me; ga += op;
+      if (me > op) w++; else if (me < op) l++; else dr++;
+    }
+    const next = matches.find(m => m.s === 'pre' && !isOff(m));
+    return `<div class="card" style="margin-top:12px;padding:12px">
+      <div class="tiles"><div class="tile"><b class="rec">${w}勝${dr}分${l}敗</b><span>戦績（${done}試合）</span></div>
+        <div class="tile"><b>${gf} - ${ga}</b><span>得点 - 失点</span></div></div>
+      ${next ? `<div class="explain" style="padding:8px 0 0">次の試合：${fmtDay(next.d)} ${fmtTime(next.d)}　${esc(stageText(next))} vs ${esc(team(next.h.id === tid ? next.a.id : next.h.id).n)}</div>` : ''}
+      <div class="explain" style="padding:8px 0 0"><a href="#/t/${tid}" style="color:var(--accent);font-weight:600">選手・監督を見る ›</a>　大会に関係なく、日本代表のすべての試合を載せています。</div>
+    </div>`;
+  }
   if (c.type === 'league') {
     const pct = total ? Math.round(done / total * 100) : 0;
     const first = matches[0], last = matches[matches.length - 1];

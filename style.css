@@ -258,3 +258,4 @@ summary { cursor: pointer; font-size: 13px; color: var(--sub); padding: 6px 0; }
 .backbtn:active { background: rgba(255,255,255,.25); }
 .stat.xgmain .lbl b { font-size: 15px; }
 .stat.xgmain { background: var(--accent-soft); }
+.tile b.rec { font-size: 17px; white-space: nowrap; }

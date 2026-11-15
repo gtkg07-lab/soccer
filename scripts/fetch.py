@@ -29,6 +29,9 @@ COMPETITIONS = [
     {"id": "ligue1", "slug": "fra.1", "name": "リーグ・アン", "type": "league", "first": 2025},
     {"id": "ucl", "slug": "uefa.champions", "name": "チャンピオンズリーグ", "type": "ucl", "first": 2024},
     {"id": "unl", "slug": "uefa.nations", "name": "UEFAネーションズリーグ", "type": "unl", "first": 2024},
+    # 日本代表：大会に関係なく、日本（ESPNのチームID 627）が出る試合をすべて集める
+    {"id": "jpn", "slug": "fifa.friendly", "name": "日本代表", "type": "team", "first": 2025, "team": "627",
+     "leagues": ["fifa.friendly", "fifa.world", "fifa.worldq.afc", "afc.asian.cup", "afc.cupq", "eaff.championship"]},
 ]
 
 KEY_EVENT_TYPES = {
@@ -135,8 +138,34 @@ def slim_event(comp, e, teams):
     return m
 
 
+def fetch_team_events(comp, teams):
+    """代表チーム用：各大会の年ごとの全試合から、そのチームの試合だけを集める。
+    シーズンは欧州と同じく8月始まり（2025年9月の試合は 25/26）。"""
+    by_season = {}
+    this_year = datetime.now(timezone.utc).year
+    for lg in comp["leagues"]:
+        for y in range(comp["first"], this_year + 2):
+            d = get("%s/%s/scoreboard?dates=%d&limit=1000" % (SITE, lg, y))
+            lgname = ((d or {}).get("leagues") or [{}])[0].get("name", "")
+            for e in (d or {}).get("events", []):
+                if not any(c["team"]["id"] == comp["team"] for c in e["competitions"][0]["competitors"]):
+                    continue
+                m = slim_event(comp, e, teams)
+                m["st"], m["lg"], m["lgName"] = lg, lg, lgname
+                m["sub"] = e.get("season", {}).get("slug", "")
+                dt = datetime.strptime(e["date"], "%Y-%m-%dT%H:%MZ")
+                sy = dt.year if dt.month >= 8 else dt.year - 1
+                if sy >= comp["first"]:
+                    by_season.setdefault(sy, {})[e["id"]] = m
+    if comp["team"] in teams:
+        comp["logo"] = teams[comp["team"]].get("logo", "")
+    return by_season
+
+
 def fetch_events(comp, teams):
     """年単位で試合を取得し、シーズンごとに分ける。"""
+    if comp["type"] == "team":
+        return fetch_team_events(comp, teams)
     by_season = {}
     this_year = datetime.now(timezone.utc).year
     for y in range(comp["first"], this_year + 2):
@@ -410,6 +439,8 @@ def wikidata_ja(names):
             en, ja = b["en"]["value"], re.sub(r"\s*[(（].*?[)）]\s*$", "", b["ja"]["value"]).strip()
             if re.fullmatch(r"[ァ-ヴー・＝=\s]+", ja) and len(en.split()) == len(re.split("[・ ]", ja)):
                 found.setdefault(en, ja.replace("=", "＝"))
+            elif re.fullmatch(r"[一-龥々ぁ-んァ-ヴー\s]+", ja) and "・" not in ja and re.search(r"[一-龥]", ja):
+                found.setdefault(en, ja.replace(" ", ""))  # 日本人などの漢字の名前
         time.sleep(1)
     return found
 
@@ -480,21 +511,23 @@ def is_club_channel(ch, team, ja):
 
 # 日本の放送局の公式チャンネル（ここの動画を最優先で使う）
 JP_CHANNELS = {
+    "UCgIeUSV91-FfmCayG4lSBcw": "JFATV",                   # 日本代表（日本サッカー協会の公式）
     "UCJQj2lbG_3w8UrncJd7JZXw": "WOWOWサッカー official",  # チャンピオンズリーグ
     "UCoFLB_Gw_AoxUuuzKjXrc_Q": "DAZN Japan",              # ラ・リーガ・リーグアン・ネーションズリーグ
     "UCMjvvElkdLRTgcTKklAUkSw": "U-NEXT フットボール",      # プレミアリーグ・ラ・リーガ
 }
 JP_SKIP = re.compile(r"ピッチレベル|ゴール集|プレビュー|インタビュー|会見|LIVE|ライブ|配信|見どころ|予想|デイリー|#shorts"
-                     r"|女子|WSL|Women|ユース|UYL|U-?\d\d", re.I)  # 女子・ユースは同名クラブがあるので除外
+                     r"|女子|WSL|Women|ユース|UYL|U-?\d\d|なでしこ|フットサル|ビーチ|eスポーツ", re.I)  # 女子・ユースは同名クラブがあるので除外
 JP_LONG = re.compile(r"ロングハイライト|フルハイライト|拡大版", re.I)
-JP_DATE = re.compile(r"(20\d\d)/(\d{1,2})/(\d{1,2})")  # 「2025/11/8」のような試合日
+JP_DATE = re.compile(r"(20\d\d)[/.](\d{1,2})[/.](\d{1,2})")  # 「2025/11/8」のような試合日
 JP_SEASON = re.compile(r"(20\d\d)[-/](\d\d)")  # 「2025-26」「25/26」のようなシーズン表記
 JP_LEG = re.compile(r"([12])(?:st|nd)\s*leg", re.I)
 # タイトルに入る大会名（試合の大会と一致する動画だけを使う。AFCチャンピオンズリーグなどの取り違え防止）
 JP_COMP = {"premier": re.compile(r"プレミアリーグ"), "laliga": re.compile(r"ラ・?リーガ"), "ligue1": re.compile(r"リーグ・?アン"),
-           "ucl": re.compile(r"(?<!AFC)(?<!AFC )(UEFA)?チャンピオンズリーグ(?!エリート)|(?<![A-Za-z])CL\s?\d{4}"), "unl": re.compile(r"ネーションズリーグ")}
+           "ucl": re.compile(r"(?<!AFC)(?<!AFC )(UEFA)?チャンピオンズリーグ(?!エリート)|(?<![A-Za-z])CL\s?\d{4}"), "unl": re.compile(r"ネーションズリーグ"),
+           "jpn": re.compile(r"日本代表|SAMURAI BLUE|国際親善試合|ワールドカップ|W杯|アジアカップ|日本\s?(?:v|vs|×)|(?:v|vs|×)\s?日本")}
 JP_SEG = re.compile(r"[【】｜|／]")
-JP_VS = re.compile(r"(\S+?)\s*(?:\s[vV][sS]?\.?\s|×)\s*(\S+)")
+JP_VS = re.compile(r"(\S+?)\s*(?:\s[vV][sS]?\.?\s|×|(?<=[^\x00-\x7F])[vV][sS](?=[^\x00-\x7F]))\s*(\S+)")
 
 
 def jp_pairs(title):
@@ -741,8 +774,7 @@ def update_photos(teams):
         if ph["teams"].get(tid, {}).get("af") != af_id:
             ph["teams"][tid] = {"af": af_id, "checked": ""}
     unmatched = [i for i in espn_ids if i not in ph["teams"]]
-    national = {m[k]["id"] for p in glob.glob(os.path.join(ROOT, "unl", "*", "matches.json"))
-                for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+    national = national_teams()
     by_name = {norm(n): i for i, n in ph.get("_af_teams", {}).items()}
     for tid in unmatched:
         t = teams.get(tid, {})
@@ -959,10 +991,15 @@ def sparql(q):
     return None
 
 
+def national_teams():
+    """代表チームのID（ネーションズリーグと日本代表の試合に出てくるチーム）。"""
+    return {m[k]["id"] for comp in ("unl", "jpn") for p in glob.glob(os.path.join(ROOT, comp, "*", "matches.json"))
+            for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+
+
 def all_roster_players():
     """各チームの選手一覧から {ESPNの選手ID: 選手情報} を作る。所属はクラブを優先し、代表は natTeam に入れる。"""
-    national = {m[k]["id"] for p in glob.glob(os.path.join(ROOT, "unl", "*", "matches.json"))
-                for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+    national = national_teams()
     ps = {}
     for path in sorted(glob.glob(os.path.join(ROOT, "t", "*.json"))):
         tid = os.path.basename(path)[:-5]
@@ -1360,8 +1397,7 @@ def update_coaches(teams):
         co["teams"][tid] = {"checked": today, "list": normalize_coaches(lst)}
     # Wikidata に最近の記録（直近3年の就任、または在任中）があるチームは Wikidata を優先する。
     # API-Football は別チームの監督が紛れ込むことがあるため（例：スペイン代表に南アフリカ人監督）
-    national = {m[k]["id"] for p in glob.glob(os.path.join(ROOT, "unl", "*", "matches.json"))
-                for m in load(os.path.relpath(p, ROOT), []) for k in ("h", "a") if m.get(k)}
+    national = national_teams()
     recent = (datetime.now(timezone.utc) - timedelta(days=3 * 365)).strftime("%Y-%m-%d")
     for tid, lst in wikidata_coaches(teams, national).items():
         if any(c["from"] >= recent or not c["to"] for c in lst):
@@ -1398,13 +1434,15 @@ def main():
         for year in sorted(by_season):
             matches = sorted(by_season[year].values(), key=lambda m: m["d"])
             save("%s/%d/matches.json" % (comp["id"], year), matches)
-            save("%s/%d/standings.json" % (comp["id"], year), fetch_standings(comp, year))
+            if comp["type"] != "team":
+                save("%s/%d/standings.json" % (comp["id"], year), fetch_standings(comp, year))
             stages = []
             for m in matches:
                 if m["st"] not in stages:
                     stages.append(m["st"])
             seasons.append({"y": year, "label": season_label(comp, year), "stages": stages,
-                            "count": len(matches), "done": sum(1 for m in matches if m["s"] == "post")})
+                            "count": len(matches), "done": sum(1 for m in matches if m["s"] == "post" and m["n"] not in
+                                                                ("STATUS_POSTPONED", "STATUS_CANCELED", "STATUS_ABANDONED"))})
 
             # 終わった試合・試合中の詳細（スタメン・スタッツ）
             for m in matches:
@@ -1413,12 +1451,12 @@ def main():
                 path = "m/%s.json" % m["id"]
                 old = load(path)
                 if not (old and old.get("final") and old.get("v") == SUMMARY_VERSION):
-                    d = get("%s/%s/summary?event=%s" % (SITE, comp["slug"], m["id"]))
+                    d = get("%s/%s/summary?event=%s" % (SITE, m.get("lg") or comp["slug"], m["id"]))
                     if d:
                         old = slim_summary(comp, year, m, d)
                         save(path, old)
                 # xG（ゴール期待値）：ESPN が提供している 26/27 シーズン以降のクラブの大会だけ
-                if old and year >= XG_FROM and comp["id"] != "unl" and not old.get("xgDone"):
+                if old and year >= XG_FROM and comp["type"] not in ("unl", "team") and not old.get("xgDone"):
                     xg = fetch_xg(comp, m)
                     if xg:
                         old["xg"] = xg
@@ -1430,13 +1468,15 @@ def main():
         if with_rosters and seasons:
             latest = by_season[seasons[-1]["y"]].values()
             ids = sorted({m[k]["id"] for m in latest for k in ("h", "a") if m.get(k)})
+            if comp["type"] == "team":
+                ids = [comp["team"]]  # 代表は自分のチームの選手一覧だけ
             for tid in ids:
                 r = fetch_roster(comp, tid, teams)
                 if r:
                     save("t/%s.json" % tid, r)
             print("  選手一覧:", len(ids), "チーム")
 
-        index["comps"].append(dict({k: comp.get(k, "") for k in ("id", "name", "type", "slug", "logo")},
+        index["comps"].append(dict({k: comp.get(k, "") for k in ("id", "name", "type", "slug", "logo", "team")},
                                    seasons=seasons))
 
     save("teams.json", teams)
